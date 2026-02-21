@@ -1,4 +1,4 @@
-# 🛡️ My Home Vault (v5.1.5)
+# 🛡️ My Home Vault
 **A Professional-Grade Backup Guardian for Linux**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
