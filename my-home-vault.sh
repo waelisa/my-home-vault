@@ -2,13 +2,13 @@
 
 # =============================================================================
 #                          M Y   H O M E   V A U L T
-#                              v5.1.4
+#                              v5.1.5
 # =============================================================================
 #   GitHub    : https://github.com/waelisa/my-home-vault
 #   License   : MIT
 #   Author    : Wael Isa
 #   Website   : https://www.wael.name
-#   Date      : 21-02-2026
+#   Date      : 22-02-2026
 # =============================================================================
 #   DESCRIPTION:
 #   My Home Vault is a professional-grade backup guardian that requires zero
@@ -16,7 +16,7 @@
 #   automatic drive detection, incremental backups (space-saving hard links),
 #   NAS support, dry-run modes, automatic retention cleanup, integrity
 #   verification, desktop notifications, cron integration, log rotation,
-#   and VAULT-FIX repair mode with NAS protection.
+#   VAULT-FIX repair mode, and crash-proof USB handling.
 # =============================================================================
 #   QUICK START:
 #   1. curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh
@@ -47,7 +47,7 @@ echo -e "${DEP_YELLOW}🔍 Checking dependencies...${DEP_NC}"
 MISSING_DEPS=()
 
 # Check for required commands
-for cmd in rsync ssh ping curl; do
+for cmd in rsync ssh ping curl mount umount; do
     if ! command -v $cmd &> /dev/null; then
         MISSING_DEPS+=($cmd)
         echo -e "  ${DEP_RED}✗ $cmd not found${DEP_NC}"
@@ -93,7 +93,7 @@ sleep 1
 # =============================================================================
 
 # --- Version Information ---
-CURRENT_VERSION="5.1.4"
+CURRENT_VERSION="5.1.5"
 VERSION_URL="https://raw.githubusercontent.com/waelisa/my-home-vault/main/VERSION"
 CONFIG_FILE="${HOME}/.my-home-vault.conf"
 VAULT_DIR="${HOME}/.my-home-vault"
@@ -159,6 +159,7 @@ ICON_TRASH="${BOLD_RED}🗑️${NC}"
 ICON_REPAIR="${BOLD_YELLOW}🔧${NC}"
 ICON_DISK="${BOLD_WHITE}💿${NC}"
 ICON_CPU="${BOLD_RED}⚙️${NC}"
+ICON_USB="${BOLD_YELLOW}🔌${NC}"
 
 # =============================================================================
 #                     F I R S T - T I M E   S E T U P   W I Z A R D
@@ -211,8 +212,10 @@ run_setup_wizard() {
             local drive_used=$(df -h "$drive" 2>/dev/null | awk 'NR==2 {print $3}')
             local drive_avail=$(df -h "$drive" 2>/dev/null | awk 'NR==2 {print $4}')
             local drive_percent=$(df -h "$drive" 2>/dev/null | awk 'NR==2 {print $5}')
+            local drive_rw=$(test -w "$drive" && echo "Read/Write" || echo "Read-Only")
             echo -e "  ${BOLD_CYAN}${index}.${NC} $drive"
             echo -e "     ${ICON_SPACE} Size: $drive_size | Used: $drive_used | Free: $drive_avail ($drive_percent)"
+            echo -e "     ${ICON_USB} Status: $drive_rw"
             ((index++))
         done
         echo -e "  ${BOLD_CYAN}0.${NC} Use home directory (${HOME}/Backups)"
@@ -461,6 +464,65 @@ send_notification() {
     fi
 }
 
+# Function to attempt drive remount if read-only
+attempt_remount() {
+    local mount_point="$1"
+    
+    print_step "remount" "Drive is read-only, attempting repair..." "warn"
+    
+    # Try to remount as read-write
+    if sudo mount -o remount,rw "$mount_point" 2>/dev/null; then
+        print_step "remount" "Successfully remounted as read-write" "done"
+        send_notification "Drive Remounted" "$(basename "$mount_point") is now writable" "normal"
+        return 0
+    else
+        print_step "remount" "Failed to remount - may be hardware write-protected" "error"
+        return 1
+    fi
+}
+
+# Function to check if destination is writable
+check_writable() {
+    local dest="$1"
+    local operation="$2"
+    
+    print_step "write" "Checking if destination is writable..." "start"
+    
+    # Check if the directory exists
+    if [ ! -d "$dest" ]; then
+        # Try to create it
+        if ! mkdir -p "$dest" 2>/dev/null; then
+            print_step "write" "Cannot create destination directory" "error"
+            return 1
+        fi
+    fi
+    
+    # Check if we can write a test file
+    local test_file="$dest/.write_test_$$"
+    if ! touch "$test_file" 2>/dev/null; then
+        print_step "write" "Destination is not writable (read-only or disconnected)" "error"
+        
+        # Try to remount if it's a mount point
+        if mountpoint -q "$dest" 2>/dev/null; then
+            if attempt_remount "$dest"; then
+                # Try again after remount
+                if touch "$test_file" 2>/dev/null; then
+                    rm -f "$test_file"
+                    print_step "write" "Write test passed after remount" "done"
+                    return 0
+                fi
+            fi
+        fi
+        
+        send_notification "Backup Failed" "Destination $dest is not writable" "critical"
+        return 1
+    else
+        rm -f "$test_file"
+        print_step "write" "Destination is writable" "done"
+        return 0
+    fi
+}
+
 # Function to rotate logs (keep last 7 days)
 rotate_logs() {
     print_step "log" "Rotating old logs" "start"
@@ -575,6 +637,8 @@ print_step() {
         "info")    echo -e "    ${ICON_INFO} ${BLUE}$description${NC}" ;;
         "space")   echo -e "    ${ICON_SPACE} ${BLUE}$description${NC}" ;;
         "log")     echo -e "    ${ICON_CRON} ${BLUE}$description${NC}" ;;
+        "write")   echo -e "    ${ICON_USB} ${BLUE}$description${NC}" ;;
+        "remount") echo -e "    ${ICON_USB} ${YELLOW}$description${NC}" ;;
         *)         echo -e "  ${ICON_ARROW} ${BOLD}$step:${NC} $description" ;;
     esac
 }
@@ -1108,8 +1172,16 @@ perform_local_backup() {
     print_step "1" "Source found" "done"
     
     print_step "2" "Preparing destination" "start"
-    mkdir -p "$LOCAL_BACKUP_INCREMENTAL"
-    print_step "2" "Destination ready" "done"
+    mkdir -p "$LOCAL_BACKUP_INCREMENTAL" 2>/dev/null || true
+    
+    # CRITICAL: Check if destination is writable before proceeding
+    print_step "2" "Checking destination writability" "start"
+    if ! check_writable "$LOCAL_BACKUP_DEST" "local backup"; then
+        print_step "2" "Destination is not writable - cannot proceed" "error"
+        send_notification "Backup Failed" "Backup drive is read-only or disconnected" "critical"
+        return 1
+    fi
+    print_step "2" "Destination ready: $LOCAL_BACKUP_DEST" "done"
     
     print_step "3" "Checking disk space" "start"
     local source_size_kb=$(get_source_size "$HOME_DIR")
@@ -1668,7 +1740,7 @@ show_backup_info() {
 show_help() {
     cat << EOF
 ${BOLD_CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}
-${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.4                     ║${NC}
+${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.5                     ║${NC}
 ${BOLD_CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}
 
 ${BOLD_WHITE}USAGE:${NC}
@@ -1714,9 +1786,10 @@ ${BOLD_WHITE}HARDWARE RECOMMENDATIONS:${NC}
   • WD Red Plus      - Best for silence & longevity
   • Seagate IronWolf - Best for ADM health monitoring
 
-${BOLD_WHITE}SAFETY NOTE:${NC}
-  My Home Vault automatically excludes its own config and logs
-  from backups to prevent infinite loops.
+${BOLD_WHITE}SAFETY NOTES:${NC}
+  • My Home Vault excludes its own config/logs (prevents infinite loops)
+  • Automatically detects and attempts to fix read-only USB drives
+  • Tests destination writability before starting backup
 
 ${BOLD_WHITE}My Home Vault - Your Data, Fortified.${NC}
 ${BOLD_WHITE}https://github.com/waelisa/my-home-vault${NC}
@@ -1732,7 +1805,7 @@ show_banner() {
     clear
     echo -e "${BOLD_CYAN}"
     echo "  ╔════════════════════════════════════════════════════════════════╗"
-    echo "  ║             M Y   H O M E   V A U L T   v5.1.4                ║"
+    echo "  ║             M Y   H O M E   V A U L T   v5.1.5                ║"
     echo "  ║           Your Data, Fortified · https://wael.name            ║"
     echo "  ╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -1743,6 +1816,7 @@ show_banner() {
     fi
     
     echo -e "  ${ICON_CPU} ${BOLD_WHITE}SSH Timeout:${NC} ${SSH_TIMEOUT}s (prevents hanging)"
+    echo -e "  ${ICON_USB} ${BOLD_WHITE}USB Protection:${NC} Auto-remount read-only drives"
     
     check_for_updates
     echo ""
@@ -1788,6 +1862,7 @@ show_menu() {
     fi
     echo -e "  ${ICON_CPU} ${BOLD_BLUE}SSH Timeout:${NC} ${SSH_TIMEOUT}s (prevents hanging on slow NAS)"
     echo -e "  ${ICON_VAULT} ${BOLD_BLUE}Excluded:${NC} My Home Vault config/logs (prevents loops)"
+    echo -e "  ${ICON_USB} ${BOLD_BLUE}USB Protection:${NC} Auto-remount if read-only"
     echo ""
 }
 
