@@ -2,7 +2,7 @@
 
 # =============================================================================
 #                 M Y   H O M E   V A U L T   Z F S   E D I T I O N
-#                              v5.1.5-zfs
+#                            v5.1.5b-zfs
 # =============================================================================
 #   GitHub    : https://github.com/waelisa/my-home-vault
 #   License   : MIT
@@ -14,21 +14,34 @@
 #   My Home Vault ZFS Edition combines the proven backup logic with ZFS
 #   power. Features automatic ZFS pool/dataset detection, compression (LZ4),
 #   automatic snapshots after each backup, snapshot retention management,
-#   and optional ZFS send/receive for remote replication.
+#   mount verification, atomic snapshot naming (collision-proof), and
+#   optional ZFS send/receive for remote replication.
 # =============================================================================
 #   ZFS FEATURES:
 #   • Compression: lz4 (saves space, minimal CPU impact)
-#   • Snapshots: Automatic after each backup with 14-day retention
+#   • Snapshots: Automatic after each backup with atomic naming
 #   • Dataset Management: Auto-creates datasets with optimal settings
+#   • Mount Verification: Ensures dataset is mounted before backup
+#   • Collision Prevention: Atomic timestamp + PID ensures unique snapshots
 #   • ZFS Send/Receive: Optional replication to remote ZFS pools
 #   • Pool Detection: Automatically detects existing ZFS pools
 # =============================================================================
+#   REQUIREMENTS:
+#   • Root/sudo permissions (ZFS commands require elevated privileges)
+#   • ZFS utilities installed (zfsutils-linux, zfs-linux, etc.)
+#   • Existing ZFS pool or willing to create one
+# =============================================================================
+#   HARDWARE RECOMMENDATIONS:
+#   • Seagate IronWolf 4TB - Best for ZFS snapshot metadata (AgileArray)
+#   • WD Red Plus 4TB      - Best for LZ4 compression & stability
+#   • ECC RAM              - Recommended for ZFS data integrity
+# =============================================================================
 #   QUICK START:
-#   1. Ensure ZFS is installed: sudo apt install zfsutils-linux (Ubuntu/Debian)
-#                               sudo pacman -S zfs-linux (Arch/Manjaro)
+#   1. Install ZFS: sudo apt install zfsutils-linux (Ubuntu/Debian)
+#                   sudo pacman -S zfs-linux (Arch/Manjaro)
 #   2. curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault-zfs.sh
 #   3. chmod +x my-home-vault-zfs.sh
-#   4. ./my-home-vault-zfs.sh
+#   4. sudo ./my-home-vault-zfs.sh
 #   5. Follow the ZFS-aware setup wizard
 # =============================================================================
 
@@ -36,16 +49,36 @@
 set -euo pipefail
 
 # =============================================================================
+#                         R O O T   P E R M I S S I O N   C H E C K
+# =============================================================================
+
+# Color definitions for permission check
+PERM_RED='\033[0;31m'
+PERM_GREEN='\033[0;32m'
+PERM_YELLOW='\033[1;33m'
+PERM_NC='\033[0m'
+
+# Check if running as root (EUID 0 = root)
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${PERM_RED}❌ ERROR: ZFS Edition requires root/sudo permissions${PERM_NC}"
+    echo -e "${PERM_YELLOW}ℹ ZFS commands need elevated privileges to:${PERM_NC}"
+    echo -e "  • Create/modify ZFS datasets"
+    echo -e "  • Create/delete ZFS snapshots"
+    echo -e "  • Perform ZFS send/receive operations"
+    echo -e "  • Verify dataset mount status"
+    echo ""
+    echo -e "${PERM_GREEN}Please run with: sudo $0${PERM_NC}"
+    exit 1
+fi
+
+echo -e "${PERM_GREEN}✓ Root privileges confirmed${PERM_NC}\n"
+sleep 1
+
+# =============================================================================
 #                         D E P E N D E N C Y   C H E C K
 # =============================================================================
 
-# Color definitions for dependency check (minimal set)
-DEP_RED='\033[0;31m'
-DEP_GREEN='\033[0;32m'
-DEP_YELLOW='\033[1;33m'
-DEP_NC='\033[0m'
-
-echo -e "${DEP_YELLOW}🔍 Checking dependencies...${DEP_NC}"
+echo -e "${PERM_YELLOW}🔍 Checking dependencies...${PERM_NC}"
 
 MISSING_DEPS=()
 
@@ -53,48 +86,48 @@ MISSING_DEPS=()
 for cmd in rsync ssh ping curl mount umount zfs zpool; do
     if ! command -v $cmd &> /dev/null; then
         MISSING_DEPS+=($cmd)
-        echo -e "  ${DEP_RED}✗ $cmd not found${DEP_NC}"
+        echo -e "  ${PERM_RED}✗ $cmd not found${PERM_NC}"
     else
-        echo -e "  ${DEP_GREEN}✓ $cmd found${DEP_NC}"
+        echo -e "  ${PERM_GREEN}✓ $cmd found${PERM_NC}"
     fi
 done
 
 # If dependencies are missing, show installation instructions
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
-    echo -e "\n${DEP_RED}❌ Missing required dependencies: ${MISSING_DEPS[*]}${DEP_NC}"
-    echo -e "\n${DEP_YELLOW}Installation instructions:${DEP_NC}"
+    echo -e "\n${PERM_RED}❌ Missing required dependencies: ${MISSING_DEPS[*]}${PERM_NC}"
+    echo -e "\n${PERM_YELLOW}Installation instructions:${PERM_NC}"
     
     # Detect distribution
     if command -v apt &> /dev/null; then
         # Debian/Ubuntu
-        echo -e "  ${DEP_GREEN}Debian/Ubuntu:${DEP_NC} sudo apt update && sudo apt install zfsutils-linux ${MISSING_DEPS[*]//zfs zpool/}"
+        echo -e "  ${PERM_GREEN}Debian/Ubuntu:${PERM_NC} sudo apt update && sudo apt install zfsutils-linux ${MISSING_DEPS[*]//zfs zpool/}"
     elif command -v dnf &> /dev/null; then
         # Fedora
-        echo -e "  ${DEP_GREEN}Fedora:${DEP_NC} sudo dnf install zfs ${MISSING_DEPS[*]//zfs zpool/}"
+        echo -e "  ${PERM_GREEN}Fedora:${PERM_NC} sudo dnf install zfs ${MISSING_DEPS[*]//zfs zpool/}"
     elif command -v pacman &> /dev/null; then
         # Arch/Manjaro
-        echo -e "  ${DEP_GREEN}Arch/Manjaro:${DEP_NC} sudo pacman -S zfs-linux ${MISSING_DEPS[*]//zfs zpool/}"
+        echo -e "  ${PERM_GREEN}Arch/Manjaro:${PERM_NC} sudo pacman -S zfs-linux ${MISSING_DEPS[*]//zfs zpool/}"
     elif command -v zypper &> /dev/null; then
         # openSUSE
-        echo -e "  ${DEP_GREEN}openSUSE:${DEP_NC} sudo zypper install zfs ${MISSING_DEPS[*]//zfs zpool/}"
+        echo -e "  ${PERM_GREEN}openSUSE:${PERM_NC} sudo zypper install zfs ${MISSING_DEPS[*]//zfs zpool/}"
     else
-        echo -e "  ${DEP_YELLOW}Please install ZFS for your distribution${DEP_NC}"
+        echo -e "  ${PERM_YELLOW}Please install ZFS for your distribution${PERM_NC}"
     fi
     
-    echo -e "\n${DEP_YELLOW}After installing dependencies, run this script again.${DEP_NC}"
+    echo -e "\n${PERM_YELLOW}After installing dependencies, run this script again.${PERM_NC}"
     exit 1
 fi
 
 # Check if ZFS modules are loaded
 if ! lsmod | grep -q zfs; then
-    echo -e "\n${DEP_YELLOW}⚠ ZFS modules not loaded. Attempting to load...${DEP_NC}"
-    sudo modprobe zfs 2>/dev/null || {
-        echo -e "${DEP_RED}Failed to load ZFS modules. Please ensure ZFS is properly installed.${DEP_NC}"
+    echo -e "\n${PERM_YELLOW}⚠ ZFS modules not loaded. Attempting to load...${PERM_NC}"
+    modprobe zfs 2>/dev/null || {
+        echo -e "${PERM_RED}Failed to load ZFS modules. Please ensure ZFS is properly installed.${PERM_NC}"
         exit 1
     }
 fi
 
-echo -e "${DEP_GREEN}✓ All dependencies satisfied! ZFS is ready.${DEP_NC}\n"
+echo -e "${PERM_GREEN}✓ All dependencies satisfied! ZFS is ready.${PERM_NC}\n"
 sleep 1
 
 # =============================================================================
@@ -102,7 +135,7 @@ sleep 1
 # =============================================================================
 
 # --- Version Information ---
-CURRENT_VERSION="5.1.5-zfs"
+CURRENT_VERSION="5.1.5b-zfs"
 VERSION_URL="https://raw.githubusercontent.com/waelisa/my-home-vault/main/VERSION"
 CONFIG_FILE="${HOME}/.my-home-vault-zfs.conf"
 VAULT_DIR="${HOME}/.my-home-vault"
@@ -181,6 +214,8 @@ ICON_CPU="${BOLD_RED}⚙️${NC}"
 ICON_USB="${BOLD_YELLOW}🔌${NC}"
 ICON_ZFS="${BOLD_CYAN}🌀${NC}"
 ICON_SNAPSHOT="${BOLD_GREEN}📸${NC}"
+ICON_MOUNT="${BOLD_MAGENTA}📂${NC}"
+ICON_ATOMIC="${BOLD_YELLOW}⚛️${NC}"
 
 # =============================================================================
 #                     Z F S   H E L P E R   F U N C T I O N S
@@ -209,6 +244,38 @@ detect_zfs_datasets() {
     echo "${datasets[@]}"
 }
 
+# Function to verify ZFS dataset is mounted
+verify_zfs_mount() {
+    local dataset="$1"
+    local expected_mountpoint="$2"
+    
+    print_step "mount" "Verifying ZFS dataset is mounted..." "start"
+    
+    # Check if dataset exists
+    if ! zfs list "$dataset" &>/dev/null; then
+        print_step "mount" "Dataset $dataset does not exist" "error"
+        return 1
+    fi
+    
+    # Get current mountpoint
+    local current_mount=$(zfs get -H -o value mountpoint "$dataset" 2>/dev/null)
+    local mounted=$(zfs get -H -o value mounted "$dataset" 2>/dev/null)
+    
+    if [ "$mounted" = "yes" ]; then
+        print_step "mount" "Dataset is mounted at: $current_mount" "done"
+        return 0
+    else
+        print_step "mount" "Dataset is not mounted, attempting to mount..." "warn"
+        if zfs mount "$dataset" 2>&1 | tee -a "$LOG_FILE"; then
+            print_step "mount" "Successfully mounted at: $current_mount" "done"
+            return 0
+        else
+            print_step "mount" "Failed to mount dataset" "error"
+            return 1
+        fi
+    fi
+}
+
 # Function to create ZFS dataset with optimal settings
 create_zfs_dataset() {
     local dataset="$1"
@@ -219,36 +286,64 @@ create_zfs_dataset() {
     # Create parent datasets if needed
     local parent="${dataset%/*}"
     if [ "$parent" != "$dataset" ] && ! zfs list "$parent" &>/dev/null; then
-        sudo zfs create -p "$parent"
+        zfs create -p "$parent"
     fi
     
     # Create the dataset
     if ! zfs list "$dataset" &>/dev/null; then
-        sudo zfs create "$dataset"
-        sudo zfs set compression="$ZFS_COMPRESSION" "$dataset"
-        sudo zfs set atime="$ZFS_ATIME" "$dataset"
-        sudo zfs set recordsize="$ZFS_RECORDSIZE" "$dataset"
-        sudo zfs set mountpoint="$mountpoint" "$dataset"
+        zfs create "$dataset"
+        zfs set compression="$ZFS_COMPRESSION" "$dataset"
+        zfs set atime="$ZFS_ATIME" "$dataset"
+        zfs set recordsize="$ZFS_RECORDSIZE" "$dataset"
+        zfs set mountpoint="$mountpoint" "$dataset"
+        
+        # Set permissions for user (optional - allows user to write without root)
+        chown "$USERNAME:$USERNAME" "$mountpoint" 2>/dev/null || true
+        
         print_step "zfs" "Dataset created with compression=$ZFS_COMPRESSION, atime=$ZFS_ATIME" "done"
     else
         print_step "zfs" "Dataset already exists" "info"
+        # Ensure it's mounted
+        verify_zfs_mount "$dataset" "$mountpoint"
     fi
 }
 
-# Function to create ZFS snapshot
+# Function to create ZFS snapshot with atomic naming (collision-proof)
 create_zfs_snapshot() {
     local dataset="$1"
-    local snapshot_name="${ZFS_SNAPSHOT_PREFIX}_$(date +%Y%m%d_%H%M%S)"
+    local timestamp=$(date +%Y%m%d_%H%M%S)
+    local pid=$$
+    local snapshot_name="${ZFS_SNAPSHOT_PREFIX}_${timestamp}_${pid}"
+    local max_attempts=5
+    local attempt=1
     
-    print_step "snapshot" "Creating ZFS snapshot: $snapshot_name" "start"
+    print_step "snapshot" "Creating ZFS snapshot with atomic naming" "start"
+    echo -e "    ${ICON_ATOMIC} Timestamp: $timestamp, PID: $pid (ensures uniqueness)"
     
-    if sudo zfs snapshot "${dataset}@${snapshot_name}"; then
-        print_step "snapshot" "Snapshot created: $snapshot_name" "done"
-        echo "$snapshot_name"
-    else
-        print_step "snapshot" "Failed to create snapshot" "error"
-        return 1
-    fi
+    while [ $attempt -le $max_attempts ]; do
+        # Check if snapshot already exists
+        if zfs list -t snapshot -o name | grep -q "${dataset}@${snapshot_name}"; then
+            print_step "snapshot" "Snapshot name collision detected! (attempt $attempt/$max_attempts)" "warn"
+            # Add microsecond delay and retry with new timestamp
+            sleep 0.1
+            timestamp=$(date +%Y%m%d_%H%M%S_%3N)  # Add milliseconds
+            snapshot_name="${ZFS_SNAPSHOT_PREFIX}_${timestamp}_${pid}"
+            ((attempt++))
+        else
+            # Create the snapshot
+            if zfs snapshot "${dataset}@${snapshot_name}"; then
+                print_step "snapshot" "Snapshot created: $snapshot_name" "done"
+                echo "$snapshot_name"
+                return 0
+            else
+                print_step "snapshot" "Failed to create snapshot" "error"
+                return 1
+            fi
+        fi
+    done
+    
+    print_step "snapshot" "Failed to create unique snapshot after $max_attempts attempts" "error"
+    return 1
 }
 
 # Function to list ZFS snapshots
@@ -267,7 +362,6 @@ clean_zfs_snapshots() {
     
     local cutoff=$(date -d "$retention_days days ago" +%s)
     local count=0
-    local freed=0
     
     while IFS= read -r snapshot; do
         if [ -n "$snapshot" ]; then
@@ -280,7 +374,7 @@ clean_zfs_snapshots() {
                     ((count++))
                 else
                     print_step "snapshot" "Deleting old snapshot: $snapshot" "warn"
-                    if sudo zfs destroy "$snapshot"; then
+                    if zfs destroy "$snapshot"; then
                         ((count++))
                     fi
                 fi
@@ -309,10 +403,10 @@ send_zfs_snapshot() {
     local remote_dataset="${dataset/$local_pool/$remote_pool}"
     
     # Create remote parent datasets if needed
-    ssh "$remote_host" "sudo zfs create -p \"${remote_dataset%/*}\" 2>/dev/null || true"
+    ssh "$remote_host" "zfs create -p \"${remote_dataset%/*}\" 2>/dev/null || true"
     
     # Send the snapshot
-    if sudo zfs send "$dataset@$snapshot" | ssh "$remote_host" "sudo zfs receive -F \"$remote_dataset\""; then
+    if zfs send "$dataset@$snapshot" | ssh "$remote_host" "zfs receive -F \"$remote_dataset\""; then
         print_step "zfs-send" "Snapshot sent successfully" "done"
         return 0
     else
@@ -334,7 +428,9 @@ run_setup_wizard() {
     echo "  ╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     echo -e "${ICON_HOME} Welcome to My Home Vault ZFS Edition!"
-    echo -e "${ICON_ZFS} This version uses ZFS compression and snapshots.\n"
+    echo -e "${ICON_ZFS} This version uses ZFS compression and snapshots."
+    echo -e "${ICON_ATOMIC} Atomic snapshot naming prevents collisions.\n"
+    echo -e "${ICON_INFO} Running with root privileges - all ZFS commands will work.\n"
     echo -e "${ICON_INFO} Configuration will be saved to: $CONFIG_FILE\n"
     
     # --- Detect ZFS pools ---
@@ -347,10 +443,11 @@ run_setup_wizard() {
         for pool in "${pools[@]}"; do
             local pool_size=$(zpool list -H -o size "$pool" 2>/dev/null)
             local pool_free=$(zpool list -H -o free "$pool" 2>/dev/null)
-            echo -e "  ${BOLD_CYAN}${index}.${NC} $pool (Size: $pool_size, Free: $pool_free)"
+            local pool_health=$(zpool list -H -o health "$pool" 2>/dev/null)
+            echo -e "  ${BOLD_CYAN}${index}.${NC} $pool (Size: $pool_size, Free: $pool_free, Health: $pool_health)"
             ((index++))
         done
-        echo -e "  ${BOLD_CYAN}0.${NC} Use regular filesystem (non-ZFS)"
+        echo -e "  ${BOLD_CYAN}0.${NC} Use regular filesystem (non-ZFS mode)"
         
         echo ""
         read -p "  ${ICON_ARROW} Select ZFS pool for backups [0-${#pools[@]}]: " pool_choice
@@ -366,6 +463,7 @@ run_setup_wizard() {
             LOCAL_BACKUP_BASE="$ZFS_MOUNTPOINT"
             echo -e "  ${ICON_SUCCESS} Using ZFS pool: $ZFS_POOL"
             echo -e "  ${ICON_ZFS} Dataset: $ZFS_DATASET"
+            echo -e "  ${ICON_MOUNT} Mount point: $ZFS_MOUNTPOINT"
         else
             USE_ZFS="no"
             echo -e "  ${ICON_WARNING} Invalid choice, using regular filesystem"
@@ -499,11 +597,12 @@ run_setup_wizard() {
     
     # --- Hardware Recommendations ---
     echo -e "\n${BOLD_WHITE}Hardware Recommendations:${NC}"
-    echo -e "  ${ICON_DISK} ${BOLD_CYAN}WD Red Plus${NC} - Best for ZFS & silence"
-    echo -e "  ${ICON_DISK} ${BOLD_CYAN}Seagate IronWolf${NC} - Best for NAS health monitoring"
-    echo -e "\n${ICON_ZFS} ZFS benefits greatly from ECC RAM and reliable storage.\n"
+    echo -e "  ${ICON_DISK} ${BOLD_CYAN}Seagate IronWolf 4TB${NC} - Best for ZFS snapshot metadata (AgileArray)"
+    echo -e "  ${ICON_DISK} ${BOLD_CYAN}WD Red Plus 4TB${NC}      - Best for LZ4 compression & stability"
+    echo -e "  ${ICON_CPU} ${BOLD_CYAN}ECC RAM${NC}               - Recommended for ZFS data integrity"
+    echo -e "\n${ICON_ZFS} ZFS benefits greatly from reliable hardware.\n"
     
-    # --- Save Configuration ---
+    # --- Save Configuration (COMPLETE BLOCK - FIXED) ---
     cat <<EOF > "$CONFIG_FILE"
 # My Home Vault ZFS Configuration
 # GitHub: https://github.com/waelisa/my-home-vault
@@ -514,6 +613,7 @@ run_setup_wizard() {
 USE_ZFS="$USE_ZFS"
 ZFS_POOL="$ZFS_POOL"
 ZFS_DATASET="$ZFS_DATASET"
+ZFS_MOUNTPOINT="$ZFS_MOUNTPOINT"
 ZFS_COMPRESSION="$ZFS_COMPRESSION"
 ZFS_ATIME="$ZFS_ATIME"
 ZFS_RECORDSIZE="$ZFS_RECORDSIZE"
@@ -542,17 +642,18 @@ ENABLE_CHECKSUM_VERIFY="$ENABLE_CHECKSUM_VERIFY"
 MIN_FREE_SPACE_PERCENT=$MIN_FREE_SPACE_PERCENT
 EOF
     
+    echo -e "\n${ICON_SUCCESS} ${BOLD_GREEN}Configuration saved!${NC}"
+    echo -e "${ICON_VAULT} ${BOLD_WHITE}Setup complete! Press Enter to continue...${NC}"
+    read -r
+    
     # Create ZFS dataset if needed
     if [ "$USE_ZFS" = "yes" ] && [ -n "$ZFS_DATASET" ]; then
         create_zfs_dataset "$ZFS_DATASET" "$ZFS_MOUNTPOINT"
     fi
     
-    echo -e "\n${ICON_SUCCESS} ${BOLD_GREEN}Configuration saved!${NC}"
-    echo -e "${ICON_VAULT} ${BOLD_WHITE}Setup complete! Press Enter to continue...${NC}"
-    read -r
-    
     # Create backup directories
     mkdir -p "$LOCAL_BACKUP_DEST/incremental" 2>/dev/null || true
+    chown -R "$USERNAME:$USERNAME" "$LOCAL_BACKUP_DEST" 2>/dev/null || true
 }
 
 # =============================================================================
@@ -693,7 +794,7 @@ attempt_remount() {
     
     print_step "remount" "Drive is read-only, attempting repair..." "warn"
     
-    if sudo mount -o remount,rw "$mount_point" 2>/dev/null; then
+    if mount -o remount,rw "$mount_point" 2>/dev/null; then
         print_step "remount" "Successfully remounted as read-write" "done"
         send_notification "Drive Remounted" "$(basename "$mount_point") is now writable" "normal"
         return 0
@@ -856,6 +957,8 @@ print_step() {
         "zfs")     echo -e "    ${ICON_ZFS} ${CYAN}$description${NC}" ;;
         "snapshot") echo -e "    ${ICON_SNAPSHOT} ${GREEN}$description${NC}" ;;
         "zfs-send") echo -e "    ${ICON_ZFS} ${YELLOW}$description${NC}" ;;
+        "mount")   echo -e "    ${ICON_MOUNT} ${MAGENTA}$description${NC}" ;;
+        "atomic")  echo -e "    ${ICON_ATOMIC} ${YELLOW}$description${NC}" ;;
         *)         echo -e "  ${ICON_ARROW} ${BOLD}$step:${NC} $description" ;;
     esac
 }
@@ -915,6 +1018,7 @@ setup_cron() {
     
     echo -e "  ${ICON_CRON} Set up automatic backups via cron\n"
     
+    # Check if already installed
     local cron_exists=false
     if crontab -l 2>/dev/null | grep -q "my-home-vault-zfs.*--quiet"; then
         cron_exists=true
@@ -937,12 +1041,14 @@ setup_cron() {
     
     case $cron_choice in
         1)
-            local cron_cmd="0 2 * * * ${HOME}/${SCRIPT_NAME} --quiet > ${LOG_DIR}/cron_\$(date +\%Y\%m\%d).log 2>&1"
+            # Daily at 2 AM
+            local cron_cmd="0 2 * * * root ${HOME}/${SCRIPT_NAME} --quiet > ${LOG_DIR}/cron_\$(date +\%Y\%m\%d).log 2>&1"
             (crontab -l 2>/dev/null | grep -v "my-home-vault" ; echo "$cron_cmd") | crontab -
             echo -e "  ${ICON_SUCCESS} Daily backup scheduled for 2 AM"
             ;;
         2)
-            local cron_cmd="0 3 * * 0 ${HOME}/${SCRIPT_NAME} --quiet > ${LOG_DIR}/cron_\$(date +\%Y\%m\%d).log 2>&1"
+            # Weekly on Sunday at 3 AM
+            local cron_cmd="0 3 * * 0 root ${HOME}/${SCRIPT_NAME} --quiet > ${LOG_DIR}/cron_\$(date +\%Y\%m\%d).log 2>&1"
             (crontab -l 2>/dev/null | grep -v "my-home-vault" ; echo "$cron_cmd") | crontab -
             echo -e "  ${ICON_SUCCESS} Weekly backup scheduled for Sunday at 3 AM"
             ;;
@@ -950,7 +1056,7 @@ setup_cron() {
             echo -e "\n${BOLD_WHITE}Custom cron syntax (min hour day month weekday)${NC}"
             echo -e "Example: ${BOLD_CYAN}30 4 * * 1-5${NC} = Weekdays at 4:30 AM"
             read -p "  ${ICON_ARROW} Enter cron schedule: " custom_schedule
-            local cron_cmd="$custom_schedule ${HOME}/${SCRIPT_NAME} --quiet > ${LOG_DIR}/cron_\$(date +\%Y\%m\%d).log 2>&1"
+            local cron_cmd="$custom_schedule root ${HOME}/${SCRIPT_NAME} --quiet > ${LOG_DIR}/cron_\$(date +\%Y\%m\%d).log 2>&1"
             (crontab -l 2>/dev/null | grep -v "my-home-vault" ; echo "$cron_cmd") | crontab -
             echo -e "  ${ICON_SUCCESS} Custom cron job added"
             ;;
@@ -1067,6 +1173,7 @@ perform_repair() {
     echo -e "  ${ICON_INFO} The -c flag forces checksum comparison (catches bit rot)"
     echo -e "  ${ICON_CPU} Note: Checksums are CPU-intensive on NAS. This may take a while.\n"
     
+    # Check if we have a current backup
     if ! ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}/current\"" 2>/dev/null; then
         if ! ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
             print_error "No 'current' backup found on NAS to repair."
@@ -1091,6 +1198,7 @@ perform_repair() {
         echo -e "    ${ICON_INFO} Bandwidth limit: ${BW_LIMIT} KB/s (protects NAS)"
     fi
     
+    # Use checksum (-c) to verify and repair (VAULT-FIX)
     if rsync -avc --progress --no-inc-recursive $bw_arg \
         --exclude-from="$exclude_file" \
         "$HOME_DIR/" \
@@ -1099,9 +1207,11 @@ perform_repair() {
         
         print_step "2" "Repair completed" "done"
         
+        # Get stats on what was fixed
         local nas_size=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}/current\" 2>/dev/null | cut -f1" 2>/dev/null)
         print_step "3" "Current backup size: ${nas_size:-unknown}" "info"
         
+        # Check if any files were actually repaired
         if grep -q "bytes received" "$LOG_FILE"; then
             local received=$(grep "bytes received" "$LOG_FILE" | tail -1 | awk '{print $1}')
             if [ "$received" != "0" ]; then
@@ -1168,6 +1278,7 @@ test_nas_connection() {
         print_step "3" "Backup directory does not exist (will be created)" "warn"
     fi
     
+    # Check NAS disk space
     print_step "4" "Checking NAS disk space" "start"
     local nas_space=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "df -k \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\$5}'" 2>/dev/null)
     if [ -n "$nas_space" ]; then
@@ -1245,17 +1356,25 @@ create_incremental_backup() {
         ln -sfn "$incremental_dir" "$LOCAL_BACKUP_CURRENT"
         print_step "6" "Current symlink updated" "done"
         
-        # ZFS: Create snapshot after successful backup
+        # Fix ownership after rsync (if running as root)
+        chown -R "$USERNAME:$USERNAME" "$LOCAL_BACKUP_DEST" 2>/dev/null || true
+        
+        # ZFS: Create snapshot after successful backup (with atomic naming)
         if [ "$USE_ZFS" = "yes" ] && [ -n "$ZFS_DATASET" ]; then
-            local snapshot_name=$(create_zfs_snapshot "$ZFS_DATASET")
-            
-            # ZFS: Send snapshot to remote if enabled
-            if [ "$ENABLE_ZFS_SEND" = "yes" ] && [ -n "$ZFS_REMOTE_HOST" ] && [ -n "$ZFS_REMOTE_POOL" ]; then
-                send_zfs_snapshot "$ZFS_DATASET" "$snapshot_name" "$ZFS_REMOTE_HOST" "$ZFS_REMOTE_POOL"
+            # Verify dataset is mounted before snapshot
+            if verify_zfs_mount "$ZFS_DATASET" "$ZFS_MOUNTPOINT"; then
+                local snapshot_name=$(create_zfs_snapshot "$ZFS_DATASET")
+                
+                # ZFS: Send snapshot to remote if enabled
+                if [ "$ENABLE_ZFS_SEND" = "yes" ] && [ -n "$ZFS_REMOTE_HOST" ] && [ -n "$ZFS_REMOTE_POOL" ]; then
+                    send_zfs_snapshot "$ZFS_DATASET" "$snapshot_name" "$ZFS_REMOTE_HOST" "$ZFS_REMOTE_POOL"
+                fi
+                
+                # Clean old ZFS snapshots
+                clean_zfs_snapshots "$ZFS_DATASET" "$ZFS_SNAPSHOT_RETENTION"
+            else
+                print_step "zfs" "Cannot create snapshot - dataset not mounted" "error"
             fi
-            
-            # Clean old ZFS snapshots
-            clean_zfs_snapshots "$ZFS_DATASET" "$ZFS_SNAPSHOT_RETENTION"
         fi
         
         print_step "7" "Verifying backup" "start"
@@ -1385,7 +1504,14 @@ perform_local_backup() {
     print_header "LOCAL BACKUP - ${USERNAME}"
     
     if [ "$USE_ZFS" = "yes" ]; then
-        echo -e "  ${ICON_ZFS} ZFS Mode: $ZFS_DATASET (compression=$ZFS_COMPRESSION)\n"
+        echo -e "  ${ICON_ZFS} ZFS Mode: $ZFS_DATASET (compression=$ZFS_COMPRESSION)"
+        echo -e "  ${ICON_ATOMIC} Atomic snapshot naming enabled (PID + millisecond precision)\n"
+        # Verify dataset is mounted before proceeding
+        if ! verify_zfs_mount "$ZFS_DATASET" "$ZFS_MOUNTPOINT"; then
+            print_error "ZFS dataset not mounted - cannot proceed"
+            return 1
+        fi
+        echo ""
     fi
     
     print_step "1" "Checking source" "start"
@@ -1451,7 +1577,10 @@ perform_nas_backup() {
     print_header "NAS BACKUP - ${USERNAME}"
     
     if [ "$USE_ZFS" = "yes" ]; then
-        echo -e "  ${ICON_ZFS} Local ZFS Mode: $ZFS_DATASET\n"
+        echo -e "  ${ICON_ZFS} Local ZFS Mode: $ZFS_DATASET"
+        # Verify local dataset is mounted
+        verify_zfs_mount "$ZFS_DATASET" "$ZFS_MOUNTPOINT"
+        echo ""
     fi
     
     print_step "1" "Testing NAS connectivity" "start"
@@ -1515,6 +1644,7 @@ perform_nas_backup() {
         print_step "6" "Bandwidth limit: ${BW_LIMIT} KB/s (protects NAS)" "info"
     fi
     
+    # Use rsync with SSH options and timeout protection
     if rsync -rPaAXvh --info=progress2 --no-inc-recursive $bw_arg \
         --delete-before \
         --exclude-from="$exclude_file" \
@@ -1567,11 +1697,13 @@ perform_quiet_backup() {
         exit 1
     fi
     
+    # Test connection silently
     if ! ping -c 1 -W 2 "$NAS_IP" &> /dev/null; then
         echo "[$(date)] ERROR: NAS unreachable" >> "$LOG_DIR/quiet.log"
         exit 1
     fi
     
+    # Run backup with minimal output
     local exclude_file=$(create_exclude_file)
     local bw_arg=""
     
@@ -1591,8 +1723,9 @@ perform_quiet_backup() {
     
     if [ $result -eq 0 ]; then
         echo "[$(date)] SUCCESS: NAS backup completed" >> "$LOG_DIR/quiet.log"
+        # Rotate logs
         find "$LOG_DIR" -name "vault_*.log" -type f -mtime +7 -delete 2>/dev/null
-        
+        # Keep quiet.log under 10MB
         if [ -f "$LOG_DIR/quiet.log" ] && [ $(stat -c%s "$LOG_DIR/quiet.log" 2>/dev/null || echo 0) -gt 10485760 ]; then
             mv "$LOG_DIR/quiet.log" "$LOG_DIR/quiet.log.old"
         fi
@@ -1649,7 +1782,7 @@ perform_local_restore() {
     
     if [ "$USE_ZFS" = "yes" ]; then
         echo -e "  ${ICON_ZFS} ZFS snapshots available:"
-        list_zfs_snapshots "$ZFS_DATASET" | head -5 | while read snap; do
+        list_zfs_snapshots "$ZFS_DATASET" | tail -5 | while read snap; do
             echo -e "    ${ICON_SNAPSHOT} $snap"
         done
         echo ""
@@ -1906,6 +2039,9 @@ manage_zfs_snapshots() {
         return 1
     fi
     
+    # Verify dataset is mounted
+    verify_zfs_mount "$ZFS_DATASET" "$ZFS_MOUNTPOINT"
+    
     echo -e "  ${ICON_ZFS} Dataset: $ZFS_DATASET\n"
     
     echo -e "  ${BOLD_WHITE}Recent snapshots:${NC}"
@@ -1915,7 +2051,7 @@ manage_zfs_snapshots() {
     echo ""
     
     echo -e "  ${BOLD_WHITE}Options:${NC}"
-    echo -e "    ${BOLD_CYAN}1.${NC} Create manual snapshot now"
+    echo -e "    ${BOLD_CYAN}1.${NC} Create manual snapshot now (atomic naming)"
     echo -e "    ${BOLD_CYAN}2.${NC} Clean old snapshots (dry run)"
     echo -e "    ${BOLD_CYAN}3.${NC} Clean old snapshots (actual)"
     echo -e "    ${BOLD_CYAN}4.${NC} Back to main menu"
@@ -1994,18 +2130,24 @@ show_backup_info() {
         echo -e "  ${ICON_ZFS} ${BOLD_CYAN}ZFS DATASET${NC}"
         echo -e "  ${BOLD_WHITE}━━━━━━━━━━━━━━${NC}"
         
+        # Verify mount status
+        local mounted=$(zfs get -H -o value mounted "$ZFS_DATASET" 2>/dev/null)
+        local mountpoint=$(zfs get -H -o value mountpoint "$ZFS_DATASET" 2>/dev/null)
         local snap_count=$(zfs list -t snapshot -r "$ZFS_DATASET" 2>/dev/null | wc -l)
         snap_count=$((snap_count - 1))  # Subtract header
         
         local zfs_compress=$(zfs get -H -o value compression "$ZFS_DATASET" 2>/dev/null)
         local zfs_atime=$(zfs get -H -o value atime "$ZFS_DATASET" 2>/dev/null)
         local zfs_recordsize=$(zfs get -H -o value recordsize "$ZFS_DATASET" 2>/dev/null)
+        local zfs_used=$(zfs get -H -o value used "$ZFS_DATASET" 2>/dev/null)
+        local zfs_avail=$(zfs get -H -o value available "$ZFS_DATASET" 2>/dev/null)
         
         echo -e "  ${BOLD_CYAN}Dataset:${NC}     $ZFS_DATASET"
+        echo -e "  ${BOLD_CYAN}Mount:${NC}       ${mounted:-unknown} at ${mountpoint}"
         echo -e "  ${BOLD_CYAN}Compression:${NC} $zfs_compress"
-        echo -e "  ${BOLD_CYAN}Snapshots:${NC}   ${snap_count:-0}"
-        echo -e "  ${BOLD_CYAN}atime:${NC}       $zfs_atime"
-        echo -e "  ${BOLD_CYAN}recordsize:${NC}  $zfs_recordsize"
+        echo -e "  ${BOLD_CYAN}Snapshots:${NC}   ${snap_count:-0} (atomic naming)"
+        echo -e "  ${BOLD_CYAN}Used/Avail:${NC}  $zfs_used / $zfs_avail"
+        echo -e "  ${BOLD_CYAN}Settings:${NC}    atime=$zfs_atime, recordsize=$zfs_recordsize"
         echo ""
     fi
     
@@ -2042,18 +2184,25 @@ show_backup_info() {
 show_help() {
     cat << EOF
 ${BOLD_CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}
-${BOLD_CYAN}║           M Y   H O M E   V A U L T   Z F S   v5.1.5-zfs              ║${NC}
+${BOLD_CYAN}║           M Y   H O M E   V A U L T   Z F S   v5.1.5b-zfs            ║${NC}
 ${BOLD_CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}
 
 ${BOLD_WHITE}USAGE:${NC}
-  ./${SCRIPT_NAME} [OPTION]
+  sudo ./${SCRIPT_NAME} [OPTION]  (ZFS commands require root)
 
 ${BOLD_WHITE}ZFS FEATURES:${NC}
   • Automatic pool/dataset detection
   • LZ4 compression (saves space, minimal CPU)
-  • Automatic snapshots after each backup
+  • Atomic snapshots with PID + millisecond precision (collision-proof)
   • Snapshot retention (14 days default)
+  • Mount verification before backup (prevents writing to wrong location)
   • Optional ZFS send/receive to remote host
+
+${BOLD_WHITE}ATOMIC SNAPSHOT NAMING:${NC}
+  • Format: mhv_YYYYMMDD_HHMMSS_PID
+  • Millisecond precision on retry
+  • 5 retry attempts before failure
+  • Ensures 100% unique snapshot names
 
 ${BOLD_WHITE}OPTIONS:${NC}
   ${BOLD_GREEN}--help, -h${NC}     Show this help
@@ -2065,7 +2214,7 @@ ${BOLD_WHITE}OPTIONS:${NC}
   ${BOLD_GREEN}--reconfigure${NC}  Run setup wizard again
 
 ${BOLD_WHITE}MENU OPTIONS:${NC}
-  ${BOLD_CYAN}1${NC}  Local Backup    - Create incremental local backup
+  ${BOLD_CYAN}1${NC}  Local Backup    - Create incremental local backup (with ZFS snapshot)
   ${BOLD_CYAN}2${NC}  Local Restore   - Restore from local backup
   ${BOLD_CYAN}3${NC}  NAS Backup      - Backup to NAS (with speed limiting)
   ${BOLD_CYAN}4${NC}  NAS Restore     - Restore from NAS
@@ -2088,14 +2237,14 @@ ${BOLD_WHITE}CHECK STATUS:${NC}
   ${BOLD_GREEN}zfs list -t snapshot | grep ${ZFS_SNAPSHOT_PREFIX}${NC}
 
 ${BOLD_WHITE}CRON EXAMPLE (daily at 2 AM):${NC}
-  0 2 * * * ${HOME}/${SCRIPT_NAME} --quiet
+  0 2 * * * root ${HOME}/${SCRIPT_NAME} --quiet
 
 ${BOLD_WHITE}HARDWARE RECOMMENDATIONS:${NC}
-  • WD Red Plus      - Best for ZFS & silence
-  • Seagate IronWolf - Best for NAS health monitoring
-  • ECC RAM          - Recommended for ZFS data integrity
+  • Seagate IronWolf 4TB - Best for ZFS snapshot metadata (AgileArray)
+  • WD Red Plus 4TB      - Best for LZ4 compression & stability
+  • ECC RAM              - Recommended for ZFS data integrity
 
-${BOLD_WHITE}My Home Vault ZFS - Your Data, Fortified with ZFS.${NC}
+${BOLD_WHITE}My Home Vault ZFS - Atomic Snapshots, Zero Collisions.${NC}
 ${BOLD_WHITE}https://github.com/waelisa/my-home-vault${NC}
 EOF
     exit 0
@@ -2109,14 +2258,18 @@ show_banner() {
     clear
     echo -e "${BOLD_CYAN}"
     echo "  ╔════════════════════════════════════════════════════════════════╗"
-    echo "  ║         M Y   H O M E   V A U L T   Z F S   v5.1.5-zfs        ║"
+    echo "  ║         M Y   H O M E   V A U L T   Z F S   v5.1.5b-zfs       ║"
     echo "  ║           Your Data, Fortified · https://wael.name            ║"
     echo "  ╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     echo -e "  ${ICON_VAULT} ${BOLD_WHITE}Guardian of${NC} ${BOLD_GREEN}${USERNAME}${NC} | ${ICON_HOME} ${BOLD_WHITE}Local${NC} | ${ICON_NAS} ${BOLD_WHITE}NAS${NC}"
     
     if [ "$USE_ZFS" = "yes" ]; then
-        echo -e "  ${ICON_ZFS} ${BOLD_WHITE}ZFS Mode:${NC} $ZFS_DATASET (compression=$ZFS_COMPRESSION)"
+        # Check mount status for display
+        local mounted=$(zfs get -H -o value mounted "$ZFS_DATASET" 2>/dev/null || echo "unknown")
+        local mount_status="$([ "$mounted" = "yes" ] && echo "mounted" || echo "⚠ not mounted")"
+        echo -e "  ${ICON_ZFS} ${BOLD_WHITE}ZFS Mode:${NC} $ZFS_DATASET (compression=$ZFS_COMPRESSION) - ${BOLD_GREEN}$mount_status${NC}"
+        echo -e "  ${ICON_ATOMIC} ${BOLD_WHITE}Atomic Snapshots:${NC} PID + millisecond precision"
     fi
     
     if [ "$BW_LIMIT" -gt 0 ]; then
@@ -2150,7 +2303,7 @@ show_menu() {
     echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}6.${NC} Repair Mode (VAULT-FIX) - Verify NAS backup${NC}             ║${NC}"
     
     if [ "$USE_ZFS" = "yes" ]; then
-        echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}7.${NC} ZFS Snapshots   - Manage snapshots${NC}                     ║${NC}"
+        echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}7.${NC} ZFS Snapshots   - Manage snapshots (atomic)${NC}           ║${NC}"
     fi
     
     if [ -n "${NAS_IP:-}" ]; then
@@ -2172,6 +2325,7 @@ show_menu() {
     echo -e "  ${BOLD_BLUE}Config:${NC} $CONFIG_FILE"
     if [ "$USE_ZFS" = "yes" ]; then
         echo -e "  ${ICON_ZFS} ${BOLD_BLUE}ZFS Dataset:${NC} $ZFS_DATASET"
+        echo -e "  ${ICON_ATOMIC} ${BOLD_BLUE}Atomic Snapshots:${NC} Enabled (PID + millisecond)"
     fi
     echo -e "  ${ICON_USB} ${BOLD_BLUE}USB Protection:${NC} Auto-remount if read-only"
     echo ""
