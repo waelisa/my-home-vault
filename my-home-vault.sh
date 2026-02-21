@@ -2,7 +2,7 @@
 
 # =============================================================================
 #                          M Y   H O M E   V A U L T
-#                              v5.1.2
+#                              v5.1.3
 # =============================================================================
 #   GitHub    : https://github.com/waelisa/my-home-vault
 #   License   : MIT
@@ -16,7 +16,7 @@
 #   automatic drive detection, incremental backups (space-saving hard links),
 #   NAS support, dry-run modes, automatic retention cleanup, integrity
 #   verification, desktop notifications, cron integration, log rotation,
-#   and AETHER-FIX repair mode.
+#   and AETHER-FIX repair mode with NAS protection.
 # =============================================================================
 #   QUICK START:
 #   1. curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh
@@ -93,12 +93,11 @@ sleep 1
 # =============================================================================
 
 # --- Version Information ---
-CURRENT_VERSION="5.1.2"
+CURRENT_VERSION="5.1.3"
 VERSION_URL="https://raw.githubusercontent.com/waelisa/my-home-vault/main/VERSION"
 CONFIG_FILE="${HOME}/.my-home-vault.conf"
 VAULT_DIR="${HOME}/.my-home-vault"
 LOG_DIR="${VAULT_DIR}/logs"
-CRON_FILE="${VAULT_DIR}/cron-job"
 
 # --- Auto-Detect User Details (Always works) ---
 USERNAME=$(whoami)
@@ -114,6 +113,8 @@ ENABLE_NOTIFICATIONS="yes"
 ENABLE_CHECKSUM_VERIFY="no"
 MIN_FREE_SPACE_PERCENT=10
 BW_LIMIT="5000"  # Default 5MB/s for NAS (protects slow drives)
+SSH_TIMEOUT=10   # SSH connection timeout in seconds
+SSH_ALIVE=60     # SSH server alive interval
 
 # =============================================================================
 #                         C O L O R   D E F I N I T I O N S
@@ -157,6 +158,7 @@ ICON_CRON="${BOLD_BLUE}⏰${NC}"
 ICON_TRASH="${BOLD_RED}🗑️${NC}"
 ICON_REPAIR="${BOLD_YELLOW}🔧${NC}"
 ICON_DISK="${BOLD_WHITE}💿${NC}"
+ICON_CPU="${BOLD_RED}⚙️${NC}"
 
 # =============================================================================
 #                     F I R S T - T I M E   S E T U P   W I Z A R D
@@ -254,6 +256,13 @@ run_setup_wizard() {
         read -p "  ${ICON_ARROW} Bandwidth limit in KB/s (0 = unlimited) [5000]: " input_bw
         BW_LIMIT="${input_bw:-5000}"
         
+        # SSH timeout settings
+        echo -e "\n${ICON_INFO} SSH connection settings (for slow NAS)"
+        read -p "  ${ICON_ARROW} SSH timeout in seconds [10]: " input_timeout
+        SSH_TIMEOUT="${input_timeout:-10}"
+        read -p "  ${ICON_ARROW} SSH keep-alive interval [60]: " input_alive
+        SSH_ALIVE="${input_alive:-60}"
+        
         # Test connection (non-blocking)
         echo -e "\n${ICON_CLOCK} Testing NAS connection..."
         if ping -c 1 -W 2 "$NAS_IP" &> /dev/null; then
@@ -305,6 +314,8 @@ NAS_IP="$NAS_IP"
 NAS_USER="$NAS_USER"
 NAS_BACKUP_PATH="$NAS_BACKUP_PATH"
 BW_LIMIT=$BW_LIMIT
+SSH_TIMEOUT=$SSH_TIMEOUT
+SSH_ALIVE=$SSH_ALIVE
 
 # General Settings
 RETENTION_DAYS=$RETENTION_DAYS
@@ -344,6 +355,9 @@ LOCAL_BACKUP_INCREMENTAL="${LOCAL_BACKUP_DEST}/incremental"
 TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
 SCRIPT_NAME=$(basename "$0")
 
+# Build SSH options with timeouts
+SSH_OPTS="-o ConnectTimeout=$SSH_TIMEOUT -o ServerAliveInterval=$SSH_ALIVE -o ServerAliveCountMax=3"
+
 # NAS destination string (if NAS configured)
 if [ -n "${NAS_IP:-}" ] && [ -n "${NAS_BACKUP_PATH:-}" ]; then
     NAS_BACKUP_DEST="${NAS_USER}@${NAS_IP}:${NAS_BACKUP_PATH}"
@@ -355,7 +369,15 @@ fi
 #                         E X C L U S I O N   L I S T
 # =============================================================================
 
+# IMPORTANT: Always exclude the vault's own config and logs to prevent recursive backups
 EXCLUDE_DIRS=(
+    # My Home Vault directories (prevent infinite loops)
+    ".my-home-vault/"
+    ".my-home-vault/*"
+    ".my-home-vault/logs/"
+    ".my-home-vault/logs/*"
+    "*.my-home-vault.conf"
+    
     # Cache and temporary files
     ".cache/"
     ".cache/*"
@@ -580,6 +602,10 @@ create_exclude_file() {
         echo "$pattern" >> "$exclude_file"
     done
     
+    # Always exclude the vault's own directories (safety net)
+    echo ".my-home-vault/" >> "$exclude_file"
+    echo ".my-home-vault/*" >> "$exclude_file"
+    
     echo "$exclude_file"
 }
 
@@ -596,6 +622,7 @@ show_exclusions() {
     done
     echo ""
     print_info "Total: $((count-1)) exclusion patterns"
+    echo -e "  ${BOLD_RED}Note:${NC} My Home Vault config/logs are always excluded (prevents infinite loops)"
     echo ""
 }
 
@@ -760,11 +787,12 @@ perform_repair() {
     fi
     
     echo -e "  ${ICON_REPAIR} This will verify and repair your NAS backup using checksums"
-    echo -e "  ${ICON_INFO} The -c flag forces checksum comparison (catches bit rot)\n"
+    echo -e "  ${ICON_INFO} The -c flag forces checksum comparison (catches bit rot)"
+    echo -e "  ${ICON_CPU} Note: Checksums are CPU-intensive on NAS. This may take a while.\n"
     
     # Check if we have a current backup
-    if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}/current\"" 2>/dev/null; then
-        if ! ssh "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
+    if ! ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}/current\"" 2>/dev/null; then
+        if ! ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
             print_error "No 'current' backup found on NAS to repair."
             return 1
         fi
@@ -788,15 +816,17 @@ perform_repair() {
     fi
     
     # Use checksum (-c) to verify and repair (AETHER-FIX)
-    if rsync -avc --progress $bw_arg \
+    # Added --no-inc-recursive for better progress display on large transfers
+    if rsync -avc --progress --no-inc-recursive $bw_arg \
         --exclude-from="$exclude_file" \
         "$HOME_DIR/" \
+        -e "ssh $SSH_OPTS" \
         "${NAS_USER}@${NAS_IP}:\"${NAS_BACKUP_PATH}/current\"/" 2>&1 | tee -a "$LOG_FILE"; then
         
         print_step "2" "Repair completed" "done"
         
         # Get stats on what was fixed
-        local nas_size=$(ssh "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}/current\" 2>/dev/null | cut -f1" 2>/dev/null)
+        local nas_size=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}/current\" 2>/dev/null | cut -f1" 2>/dev/null)
         print_step "3" "Current backup size: ${nas_size:-unknown}" "info"
         
         # Check if any files were actually repaired
@@ -804,28 +834,30 @@ perform_repair() {
             local received=$(grep "bytes received" "$LOG_FILE" | tail -1 | awk '{print $1}')
             if [ "$received" != "0" ]; then
                 print_step "3" "⚠ Repaired corrupted files - check log for details" "warn"
+                send_notification "AETHER-FIX: Files Repaired" "Corrupted files were fixed on NAS" "normal"
             else
                 print_step "3" "✓ No corruption detected - backup is healthy" "done"
+                send_notification "AETHER-FIX: Backup Healthy" "No corruption found in NAS backup" "normal"
             fi
         fi
     else
         local exit_code=$?
         print_step "2" "Repair failed with exit code $exit_code" "error"
         rm -f "$exclude_file"
+        send_notification "AETHER-FIX Failed" "Repair encountered errors - check logs" "critical"
         return $exit_code
     fi
     
     rm -f "$exclude_file"
     echo ""
     print_success "AETHER-FIX completed successfully"
-    send_notification "Repair Complete" "NAS backup verified and repaired" "normal"
 }
 
 # =============================================================================
 #                     B A C K U P   F U N C T I O N S
 # =============================================================================
 
-# Function to test NAS connection
+# Function to test NAS connection with timeout protection
 test_nas_connection() {
     if [ -z "${NAS_IP:-}" ] || [ -z "${NAS_USER:-}" ]; then
         print_error "NAS not configured. Please run setup wizard (delete ~/.my-home-vault.conf and restart)"
@@ -842,25 +874,25 @@ test_nas_connection() {
         return 1
     fi
     
-    print_step "2" "Testing SSH connection" "start"
+    print_step "2" "Testing SSH connection (timeout: ${SSH_TIMEOUT}s)" "start"
     
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" 2>/dev/null; then
+    if ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "echo OK" 2>/dev/null; then
         print_step "2" "SSH connection successful (key-based auth)" "done"
         SSH_AUTH_TYPE="key"
     else
         print_step "2" "SSH key authentication failed" "warn"
         
-        if ssh -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" 2>/dev/null; then
+        if ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "echo OK" 2>/dev/null; then
             print_step "2" "SSH connection successful (password auth)" "done"
             SSH_AUTH_TYPE="password"
         else
-            print_step "2" "SSH connection failed" "error"
+            print_step "2" "SSH connection failed after ${SSH_TIMEOUT}s timeout" "error"
             return 1
         fi
     fi
     
     print_step "3" "Checking backup directory on NAS" "start"
-    if ssh "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
+    if ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
         print_step "3" "Backup directory exists: $NAS_BACKUP_PATH" "done"
     else
         print_step "3" "Backup directory does not exist (will be created)" "warn"
@@ -868,7 +900,7 @@ test_nas_connection() {
     
     # Check NAS disk space
     print_step "4" "Checking NAS disk space" "start"
-    local nas_space=$(ssh "${NAS_USER}@${NAS_IP}" "df -k \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\$5}'" 2>/dev/null)
+    local nas_space=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "df -k \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\$5}'" 2>/dev/null)
     if [ -n "$nas_space" ]; then
         local nas_free_kb=$(echo "$nas_space" | awk '{print $1}')
         local nas_percent=$(echo "$nas_space" | awk '{print $2}' | tr -d '%')
@@ -893,7 +925,7 @@ ensure_nas_directory() {
     
     print_step "3" "Ensuring NAS directory exists" "start"
     
-    if ssh "${NAS_USER}@${NAS_IP}" "mkdir -p \"${NAS_BACKUP_PATH}\"" 2>&1 | tee -a "$LOG_FILE"; then
+    if ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "mkdir -p \"${NAS_BACKUP_PATH}\"" 2>&1 | tee -a "$LOG_FILE"; then
         print_step "3" "NAS directory ready" "done"
         return 0
     else
@@ -1036,12 +1068,10 @@ clean_old_backups() {
                 return 0
             fi
             
-            if ping -c 1 -W 2 "$NAS_IP" &> /dev/null && ssh -o BatchMode=yes -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
+            if ping -c 1 -W 2 "$NAS_IP" &> /dev/null && ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
                 print_step "1" "Scanning NAS for old backups" "start"
                 
-                local ssh_cmd="ssh"
-                
-                local nas_old_folders=$($ssh_cmd "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -maxdepth 1 -type d -name '????-??-??_??-??-??' -ctime +${RETENTION_DAYS} 2>/dev/null")
+                local nas_old_folders=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -maxdepth 1 -type d -name '????-??-??_??-??-??' -ctime +${RETENTION_DAYS} 2>/dev/null")
                 local nas_old_count=$(echo "$nas_old_folders" | wc -l)
                 
                 if [ "$nas_old_count" -gt 0 ] && [ -n "$nas_old_folders" ]; then
@@ -1049,7 +1079,7 @@ clean_old_backups() {
                     
                     if [ "$dry_run" != "yes" ]; then
                         print_step "2" "Deleting old backups from NAS..." "start"
-                        $ssh_cmd "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -maxdepth 1 -type d -name '????-??-??_??-??-??' -ctime +${RETENTION_DAYS} -exec rm -rf {} \;" 2>&1 | tee -a "$LOG_FILE"
+                        ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -maxdepth 1 -type d -name '????-??-??_??-??-??' -ctime +${RETENTION_DAYS} -exec rm -rf {} \;" 2>&1 | tee -a "$LOG_FILE"
                         print_step "2" "Old NAS backups deleted" "done"
                     else
                         print_step "2" "Dry run: would delete $nas_old_count old NAS backups" "info"
@@ -1136,12 +1166,12 @@ perform_nas_backup() {
     
     print_step "2" "Testing SSH connection" "start"
     
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
+    if ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
         print_step "2" "SSH key auth successful" "done"
     else
         print_step "2" "SSH key auth failed, will use password" "warn"
-        if ! ssh -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
-            print_step "2" "SSH connection failed" "error"
+        if ! ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
+            print_step "2" "SSH connection failed after ${SSH_TIMEOUT}s timeout" "error"
             return 1
         fi
     fi
@@ -1149,7 +1179,7 @@ perform_nas_backup() {
     ensure_nas_directory || return 1
     
     print_step "4" "Checking NAS disk space" "start"
-    local nas_space=$(ssh "${NAS_USER}@${NAS_IP}" "df -k \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\$5}'" 2>/dev/null)
+    local nas_space=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "df -k \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\$5}'" 2>/dev/null)
     if [ -n "$nas_space" ]; then
         local nas_free_kb=$(echo "$nas_space" | awk '{print $1}')
         local nas_percent=$(echo "$nas_space" | awk '{print $2}' | tr -d '%')
@@ -1187,16 +1217,18 @@ perform_nas_backup() {
         print_step "6" "Bandwidth limit: ${BW_LIMIT} KB/s (protects NAS)" "info"
     fi
     
-    if rsync -rPaAXvh --info=progress2 $bw_arg \
+    # Use rsync with SSH options and timeout protection
+    if rsync -rPaAXvh --info=progress2 --no-inc-recursive $bw_arg \
         --delete-before \
         --exclude-from="$exclude_file" \
         "$HOME_DIR/" \
+        -e "ssh $SSH_OPTS" \
         "${NAS_USER}@${NAS_IP}:\"${NAS_BACKUP_PATH}\"/" 2>&1 | tee -a "$LOG_FILE"; then
         
         print_step "6" "Rsync completed" "done"
         
         print_step "7" "Verifying backup" "start"
-        local nas_size=$(ssh "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}\" 2>/dev/null | cut -f1" 2>/dev/null)
+        local nas_size=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}\" 2>/dev/null | cut -f1" 2>/dev/null)
         print_step "7" "NAS backup size: ${nas_size:-unknown}" "done"
     else
         local exit_code=$?
@@ -1248,10 +1280,11 @@ perform_quiet_backup() {
         bw_arg="--bwlimit=$BW_LIMIT"
     fi
     
-    rsync -rPaAXv $bw_arg \
+    rsync -rPaAXv --no-inc-recursive $bw_arg \
         --delete-before \
         --exclude-from="$exclude_file" \
         "$HOME_DIR/" \
+        -e "ssh $SSH_OPTS" \
         "${NAS_USER}@${NAS_IP}:\"${NAS_BACKUP_PATH}\"/" >> "$LOG_DIR/quiet.log" 2>&1
     
     local result=$?
@@ -1420,26 +1453,26 @@ perform_nas_restore() {
     print_step "1" "NAS reachable" "done"
     
     print_step "2" "Testing SSH connection" "start"
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
+    if ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
         print_step "2" "SSH key auth successful" "done"
     else
         print_step "2" "Will use password auth" "warn"
-        if ! ssh -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
-            print_step "2" "SSH connection failed" "error"
+        if ! ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "echo OK" &> /dev/null; then
+            print_step "2" "SSH connection failed after ${SSH_TIMEOUT}s timeout" "error"
             return 1
         fi
     fi
     
     print_step "3" "Checking backup on NAS" "start"
-    if ! ssh "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
+    if ! ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
         print_step "3" "No backup on NAS" "error"
         return 1
     fi
     print_step "3" "Backup found" "done"
     
     print_step "4" "NAS backup info" "start"
-    local nas_size=$(ssh "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}\" 2>/dev/null | cut -f1" 2>/dev/null)
-    local nas_files=$(ssh "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -type f 2>/dev/null | wc -l" 2>/dev/null)
+    local nas_size=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}\" 2>/dev/null | cut -f1" 2>/dev/null)
+    local nas_files=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -type f 2>/dev/null | wc -l" 2>/dev/null)
     print_step "4" "Size: ${nas_size:-unknown}" "info"
     print_step "4" "Files: ${nas_files:-unknown}" "info"
     
@@ -1493,7 +1526,7 @@ perform_nas_restore() {
     
     print_step "6" "Running restore from NAS" "start"
     
-    if rsync $rsync_opts "${NAS_USER}@${NAS_IP}:\"${NAS_BACKUP_PATH}\"/" "$HOME_DIR/" 2>&1 | tee -a "$LOG_FILE"; then
+    if rsync $rsync_opts -e "ssh $SSH_OPTS" "${NAS_USER}@${NAS_IP}:\"${NAS_BACKUP_PATH}\"/" "$HOME_DIR/" 2>&1 | tee -a "$LOG_FILE"; then
         print_step "6" "Restore completed" "done"
         
         if [ $mode_choice -eq 1 ]; then
@@ -1554,7 +1587,7 @@ setup_ssh_key() {
     
     echo ""
     print_success "SSH key setup complete"
-    print_info "Test with: ssh ${NAS_USER}@${NAS_IP}"
+    print_info "Test with: ssh $SSH_OPTS ${NAS_USER}@${NAS_IP}"
 }
 
 # =============================================================================
@@ -1607,20 +1640,19 @@ show_backup_info() {
         echo -e "  ${BOLD_WHITE}━━━━━━━━━━${NC}"
         
         if ping -c 1 -W 2 "$NAS_IP" &> /dev/null; then
-            local ssh_cmd="ssh"
-            
-            if $ssh_cmd -o BatchMode=yes -o ConnectTimeout=5 "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
-                local nas_size=$($ssh_cmd "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}\" 2>/dev/null | cut -f1" 2>/dev/null)
-                local nas_files=$($ssh_cmd "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -type f 2>/dev/null | wc -l" 2>/dev/null)
-                local nas_space=$($ssh_cmd "${NAS_USER}@${NAS_IP}" "df -h \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\"free,\",\$5,\"used\"}'" 2>/dev/null)
+            if ssh $SSH_OPTS -o BatchMode=yes "${NAS_USER}@${NAS_IP}" "test -d \"${NAS_BACKUP_PATH}\"" 2>/dev/null; then
+                local nas_size=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "du -sh \"${NAS_BACKUP_PATH}\" 2>/dev/null | cut -f1" 2>/dev/null)
+                local nas_files=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -type f 2>/dev/null | wc -l" 2>/dev/null)
+                local nas_space=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "df -h \"${NAS_BACKUP_PATH}\" 2>/dev/null | awk 'NR==2 {print \$4,\"free,\",\$5,\"used\"}'" 2>/dev/null)
                 
                 echo -e "  ${BOLD_CYAN}Location:${NC} ${NAS_USER}@${NAS_IP}:${NAS_BACKUP_PATH}"
                 echo -e "  ${BOLD_CYAN}Size:${NC}     ${nas_size:-unknown}"
                 echo -e "  ${BOLD_CYAN}Files:${NC}    ${nas_files:-unknown}"
                 echo -e "  ${BOLD_CYAN}Speed:${NC}    ${BW_LIMIT} KB/s limit (protects NAS)"
+                echo -e "  ${BOLD_CYAN}SSH:${NC}       Timeout ${SSH_TIMEOUT}s, Keep-alive ${SSH_ALIVE}s"
                 [ -n "$nas_space" ] && echo -e "  ${BOLD_CYAN}Disk:${NC}      $nas_space"
                 
-                local nas_backup_count=$($ssh_cmd "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -maxdepth 1 -type d -name '????-??-??_??-??-??' 2>/dev/null | wc -l")
+                local nas_backup_count=$(ssh $SSH_OPTS "${NAS_USER}@${NAS_IP}" "find \"${NAS_BACKUP_PATH}\" -maxdepth 1 -type d -name '????-??-??_??-??-??' 2>/dev/null | wc -l")
                 [ "$nas_backup_count" -gt 0 ] && echo -e "  ${BOLD_CYAN}Versions:${NC} ${nas_backup_count}"
             else
                 echo -e "  ${YELLOW}No backup found on NAS${NC}"
@@ -1636,7 +1668,7 @@ show_backup_info() {
 show_help() {
     cat << EOF
 ${BOLD_CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}
-${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.2                     ║${NC}
+${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.3                     ║${NC}
 ${BOLD_CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}
 
 ${BOLD_WHITE}USAGE:${NC}
@@ -1646,7 +1678,7 @@ ${BOLD_WHITE}OPTIONS:${NC}
   ${BOLD_GREEN}--help, -h${NC}     Show this help
   ${BOLD_GREEN}--version${NC}      Show version
   ${BOLD_GREEN}--quiet, -q${NC}    Run in quiet mode (for cron) - performs NAS backup
-  ${BOLD_GREEN}--repair${NC}        Run AETHER-FIX repair mode (verify & fix NAS backup)
+  ${BOLD_GREEN}--repair${NC}       Run AETHER-FIX repair mode (verify & fix NAS backup)
   ${BOLD_GREEN}--dry-run${NC}      Simulation mode
   ${BOLD_GREEN}--quick${NC}        Skip checksum verify
   ${BOLD_GREEN}--reconfigure${NC}  Run setup wizard again
@@ -1669,6 +1701,7 @@ ${BOLD_WHITE}CONFIG:${NC}
   File: ${BOLD_CYAN}~/.my-home-vault.conf${NC}
   Logs: ${BOLD_CYAN}~/.my-home-vault/logs/${NC}
   BW_LIMIT: ${BOLD_CYAN}${BW_LIMIT} KB/s${NC} (protects NAS drives)
+  SSH_TIMEOUT: ${BOLD_CYAN}${SSH_TIMEOUT}s${NC} (prevents hanging)
 
 ${BOLD_WHITE}CHECK STATUS:${NC}
   ${BOLD_GREEN}grep "SUCCESS" ~/.my-home-vault/logs/quiet.log${NC}
@@ -1680,6 +1713,10 @@ ${BOLD_WHITE}CRON EXAMPLE (daily at 2 AM):${NC}
 ${BOLD_WHITE}HARDWARE RECOMMENDATIONS:${NC}
   • WD Red Plus      - Best for silence & longevity
   • Seagate IronWolf - Best for ADM health monitoring
+
+${BOLD_WHITE}SAFETY NOTE:${NC}
+  My Home Vault automatically excludes its own config and logs
+  from backups to prevent infinite loops.
 
 ${BOLD_WHITE}My Home Vault - Your Data, Fortified.${NC}
 ${BOLD_WHITE}https://github.com/waelisa/my-home-vault${NC}
@@ -1695,7 +1732,7 @@ show_banner() {
     clear
     echo -e "${BOLD_CYAN}"
     echo "  ╔════════════════════════════════════════════════════════════════╗"
-    echo "  ║             M Y   H O M E   V A U L T   v5.1.2                ║"
+    echo "  ║             M Y   H O M E   V A U L T   v5.1.3                ║"
     echo "  ║           Your Data, Fortified · https://wael.name            ║"
     echo "  ╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -1705,7 +1742,9 @@ show_banner() {
         echo -e "  ${ICON_NAS} ${BOLD_WHITE}NAS Speed:${NC} ${BW_LIMIT} KB/s limit (protects drives)"
     fi
     
-    check_for_updates
+    echo -e "  ${ICON_CPU} ${BOLD_WHITE}SSH Timeout:${NC} ${SSH_TIMEOUT}s (prevents hanging)"
+    
+    check_for_updates()
     echo ""
 }
 
@@ -1747,6 +1786,8 @@ show_menu() {
     if [ "$BW_LIMIT" -gt 0 ]; then
         echo -e "  ${ICON_NAS} ${BOLD_BLUE}NAS Speed:${NC} ${BW_LIMIT} KB/s limit (recommended for Asustor AS4004T)"
     fi
+    echo -e "  ${ICON_CPU} ${BOLD_BLUE}SSH Timeout:${NC} ${SSH_TIMEOUT}s (prevents hanging on slow NAS)"
+    echo -e "  ${ICON_VAULT} ${BOLD_BLUE}Excluded:${NC} My Home Vault config/logs (prevents loops)"
     echo ""
 }
 
