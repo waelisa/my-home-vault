@@ -5,68 +5,68 @@
 [![Version](https://img.shields.io/badge/version-5.1.5-blue.svg)](#)
 [![Bash](https://img.shields.io/badge/Shell-Bash-4EAA25.svg)](https://www.gnu.org/software/bash/)
 
-**My Home Vault** is a lightweight yet powerful backup utility designed for users who want enterprise-level data protection without the complexity. Optimized for home servers and NAS systems (like the Asustor AS4004T), it handles everything from local USB syncs to remote SSH backups with built-in integrity healing.
+Professional-grade data protection for Linux, powered by Rsync & ZFS.
 
----
+My Home Vault is a robust, automated backup engine designed for users who want enterprise-level data security without the complexity. Whether you are using a standard external drive or a high-end ZFS pool, My Home Vault stands guard over your data.
 
-## ✨ Features
 
-* **🧙 Zero-Coding Wizard:** Interactive first-run setup configures your paths and NAS settings in seconds.
-* **📉 Space-Saving Incrementals:** Uses `rsync` with hard links (`--link-dest`) to provide 14+ days of history for the storage price of a single backup.
-* **🔧 VAULT-FIX (Repair Mode):** Performs bit-for-bit checksum verification to identify and repair silent data corruption (bit rot).
-* **🔌 Crash-Proof USB Handling:** Automatically detects read-only filesystems and attempts self-repair remounts.
-* **⏰ Set-and-Forget:** Integrated Cron scheduling for automatic nightly backups.
-* **📊 Log Management:** Automated log rotation and cleanup keeps your system lean.
-* **🔔 Desktop Alerts:** Native Linux notifications keep you informed of backup status.
+✨ Key Features
 
----
+    Zero-Knowledge Setup: A 30-second first-run wizard detects your drives and configures the vault automatically.
 
-## 🚀 Quick Start
+    VAULT-FIX & SCAN: Bit-rot protection that verifies data integrity using checksums and repairs corrupted files.
 
-Protect your data in three simple commands:
+    Crash-Proof Logic: Smart handling of USB disconnections and NAS network drops.
 
-# 1. Download the script
+    Automated Retention: Keeps your history for 14 days (customizable) and purges old data automatically to save space.
+
+    Non-Interactive Mode: Fully compatible with cron for 100% automated, "set-and-forget" backups.
+
+    ZFS Mastery: Includes atomic snapshot naming (collision-proof), mount verification, and LZ4 compression.
+
+📦 Installation
+1. Download the Engine
+# For the Standard Edition
 ```bash
-curl -O [https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh](https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh)
+curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh
 ```
-# 2. Make it executable
+# For the ZFS Edition
 ```bash
-chmod +x my-home-vault.sh
+curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault-zfs.sh
 ```
-
-# 3. Run and follow the wizard
+2. Make it Executable
 ```bash
+chmod +x my-home-vault*.sh
+```
+3. Launch the Wizard
+# Standard
+```bash
+
 ./my-home-vault.sh
 ```
+# ZFS (Requires Sudo)
+```bash
 
-🛠 How It Works
-The Magic of Hard Links
+sudo ./my-home-vault-zfs.sh
+```
+🛠 Advanced Usage
 
-My Home Vault doesn't just copy files. It uses intelligent linking logic. If a file hasn't changed since yesterday, the script creates a "Hard Link" on your NAS.
+My Home Vault supports several flags for automation:
 
-    Yesterday's Backup: 500GB
+    --quiet: Run without output (perfect for cron).
 
-    Today's Backup (with 1GB of new photos): Uses only 1GB of actual new disk space.
+    --dry-run: Test the backup without moving any data.
 
-    Result: You get 14 full-looking restore points while only using a fraction of the space.
+    --vault-fix: Deep-scan and repair data corruption.
 
-Data Integrity (VAULT-SCAN)
+💾 Recommended Hardware
 
-Most backup tools only check file size and date. My Home Vault's VAULT-SCAN reads every bit of data on the destination and compares MD5 hashes against the source. If bit-rot is detected, VAULT-FIX surgicaly replaces only the corrupted files.
-📋 Requirements
+To ensure your vault performs at its peak, we recommend CMR-based NAS drives that can handle high metadata traffic.
 
-    OS: Any modern Linux distro (Arch, Manjaro, Ubuntu, Debian, Fedora).
+    Seagate IronWolf: Optimized for ZFS snapshots and high-frequency file linking.
 
-    Dependencies: rsync, ssh, curl (Standard on 99% of systems).
+    WD Red Plus: Ideal for stable, long-term archival and LZ4 compression.
 
-    NAS Support: Compatible with any SSH-enabled NAS (Optimized for Asustor ADM).
-
-💾 Hardware Recommendations
-
-For users with large datasets, the speed of your backup depends on your drive technology. We recommend:
-Drive Type	Best For	Why?
-WD Red Plus	Quiet Home Office	Reliable CMR tech for constant rsync tasks.
-Seagate IronWolf	Performance / Health	Integrated health management for Asustor NAS.
 👤 Author
 
 Wael Isa
