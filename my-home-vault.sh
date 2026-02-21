@@ -2,7 +2,7 @@
 
 # =============================================================================
 #                          M Y   H O M E   V A U L T
-#                              v5.1.5
+#                            v5.1.5.b
 # =============================================================================
 #   GitHub    : https://github.com/waelisa/my-home-vault
 #   License   : MIT
@@ -16,7 +16,14 @@
 #   automatic drive detection, incremental backups (space-saving hard links),
 #   NAS support, dry-run modes, automatic retention cleanup, integrity
 #   verification, desktop notifications, cron integration, log rotation,
-#   VAULT-FIX repair mode, and crash-proof USB handling.
+#   VAULT-FIX repair mode, crash-proof USB handling, and non-interactive
+#   safety for automated backups.
+# =============================================================================
+#   NON-INTERACTIVE FEATURES:
+#   • Cron-safe disk space checks (no hanging prompts)
+#   • Automatic failure handling in quiet mode
+#   • Smart confirmation skipping when running unattended
+#   • Detailed logging for post-mortem analysis
 # =============================================================================
 #   QUICK START:
 #   1. curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh
@@ -31,6 +38,15 @@
 
 # Exit on error, undefined variables, and pipe failures
 set -euo pipefail
+
+# =============================================================================
+#                         G L O B A L   F L A G S
+# =============================================================================
+
+# Initialize global flags (can be overridden by command line)
+INTERACTIVE=true      # Default to interactive mode
+DRY_RUN=""            # Empty by default
+QUICK_MODE=false      # Quick mode flag
 
 # =============================================================================
 #                         D E P E N D E N C Y   C H E C K
@@ -93,7 +109,7 @@ sleep 1
 # =============================================================================
 
 # --- Version Information ---
-CURRENT_VERSION="5.1.5"
+CURRENT_VERSION="5.1.5.b"
 VERSION_URL="https://raw.githubusercontent.com/waelisa/my-home-vault/main/VERSION"
 CONFIG_FILE="${HOME}/.my-home-vault.conf"
 VAULT_DIR="${HOME}/.my-home-vault"
@@ -160,12 +176,65 @@ ICON_REPAIR="${BOLD_YELLOW}🔧${NC}"
 ICON_DISK="${BOLD_WHITE}💿${NC}"
 ICON_CPU="${BOLD_RED}⚙️${NC}"
 ICON_USB="${BOLD_YELLOW}🔌${NC}"
+ICON_AUTO="${BOLD_CYAN}🤖${NC}"  # New icon for non-interactive mode
+
+# =============================================================================
+#                     N O N - I N T E R A C T I V E   H E L P E R S
+# =============================================================================
+
+# Function to safely handle confirmations in non-interactive mode
+safe_confirm() {
+    local prompt="$1"
+    local default="$2"  # Should be "yes" or "no"
+    
+    if [ "$INTERACTIVE" = false ]; then
+        # Non-interactive mode - use default or fail
+        log_message "${ICON_AUTO} Non-interactive mode: Auto-responding with '$default' to: $prompt"
+        if [ "$default" = "yes" ]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        # Interactive mode - prompt user
+        read -p "  ${ICON_ARROW} $prompt (yes/no): " -r response
+        case $response in
+            [Yy][Ee][Ss]|[Yy]) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+}
+
+# Function to safely handle read operations in non-interactive mode
+safe_read() {
+    local prompt="$1"
+    local default="$2"
+    local var_name="$3"
+    
+    if [ "$INTERACTIVE" = false ]; then
+        # Non-interactive mode - use default
+        log_message "${ICON_AUTO} Non-interactive mode: Using default '$default' for: $prompt"
+        eval "$var_name=\"$default\""
+    else
+        # Interactive mode - prompt user
+        read -p "  ${ICON_ARROW} $prompt [$default]: " -r input
+        if [ -z "$input" ]; then
+            eval "$var_name=\"$default\""
+        else
+            eval "$var_name=\"$input\""
+        fi
+    fi
+}
 
 # =============================================================================
 #                     F I R S T - T I M E   S E T U P   W I Z A R D
 # =============================================================================
 
 run_setup_wizard() {
+    # Wizard always runs in interactive mode
+    local old_interactive=$INTERACTIVE
+    INTERACTIVE=true
+    
     clear
     echo -e "${BOLD_CYAN}"
     echo "  ╔════════════════════════════════════════════════════════════════╗"
@@ -221,9 +290,9 @@ run_setup_wizard() {
         echo -e "  ${BOLD_CYAN}0.${NC} Use home directory (${HOME}/Backups)"
         
         echo ""
-        read -p "  ${ICON_ARROW} Select drive [0-${#detected_drives[@]}]: " drive_choice
+        safe_read "Select drive" "0" drive_choice
         
-        if [ "$drive_choice" = "0" ] || [ -z "$drive_choice" ]; then
+        if [ "$drive_choice" = "0" ]; then
             LOCAL_BACKUP_BASE="${HOME}/Backups"
             echo -e "  ${ICON_INFO} Using home directory: $LOCAL_BACKUP_BASE"
         elif [ "$drive_choice" -ge 1 ] && [ "$drive_choice" -le "${#detected_drives[@]}" ]; then
@@ -245,25 +314,26 @@ run_setup_wizard() {
     echo -e "\n${BOLD_WHITE}Step 2: NAS Configuration (optional)${NC}"
     echo -e "${ICON_INFO} If you have a NAS, enter details. Press Enter to skip.\n"
     
-    read -p "  ${ICON_ARROW} Enter NAS IP (e.g., 192.168.100.10) [skip]: " input_ip
+    safe_read "Enter NAS IP (e.g., 192.168.100.10)" "" input_ip
+    
     if [ -n "$input_ip" ]; then
         NAS_IP="$input_ip"
-        read -p "  ${ICON_ARROW} Enter NAS Username [${USERNAME}]: " input_user
+        safe_read "Enter NAS Username" "$USERNAME" input_user
         NAS_USER="${input_user:-$USERNAME}"
-        read -p "  ${ICON_ARROW} Enter NAS Backup Path [/home/${NAS_USER}/MyHomeVault]: " input_path
+        safe_read "Enter NAS Backup Path" "/home/${NAS_USER}/MyHomeVault" input_path
         NAS_BACKUP_PATH="${input_path:-/home/${NAS_USER}/MyHomeVault}"
         
         # Bandwidth limit for NAS (protect slow drives)
         echo -e "\n${ICON_INFO} NAS bandwidth limiting (keeps NAS responsive for other users)"
         echo -e "${ICON_INFO} Recommended: 5000 KB/s (5MB/s) for Asustor AS4004T"
-        read -p "  ${ICON_ARROW} Bandwidth limit in KB/s (0 = unlimited) [5000]: " input_bw
+        safe_read "Bandwidth limit in KB/s (0 = unlimited)" "5000" input_bw
         BW_LIMIT="${input_bw:-5000}"
         
         # SSH timeout settings
         echo -e "\n${ICON_INFO} SSH connection settings (for slow NAS)"
-        read -p "  ${ICON_ARROW} SSH timeout in seconds [10]: " input_timeout
+        safe_read "SSH timeout in seconds" "10" input_timeout
         SSH_TIMEOUT="${input_timeout:-10}"
-        read -p "  ${ICON_ARROW} SSH keep-alive interval [60]: " input_alive
+        safe_read "SSH keep-alive interval" "60" input_alive
         SSH_ALIVE="${input_alive:-60}"
         
         # Test connection (non-blocking)
@@ -283,12 +353,12 @@ run_setup_wizard() {
     # --- Retention Policy ---
     echo -e "\n${BOLD_WHITE}Step 3: Backup Retention${NC}"
     echo -e "${ICON_INFO} Older backups will be automatically deleted."
-    read -p "  ${ICON_ARROW} Keep backups for how many days? [14]: " input_retention
+    safe_read "Keep backups for how many days?" "14" input_retention
     RETENTION_DAYS="${input_retention:-14}"
     
     # --- Notifications ---
     echo -e "\n${BOLD_WHITE}Step 4: Desktop Notifications${NC}"
-    read -p "  ${ICON_ARROW} Enable desktop popups? (yes/no) [yes]: " input_notify
+    safe_read "Enable desktop popups? (yes/no)" "yes" input_notify
     if [[ "$input_notify" =~ ^[Nn][Oo]?$ ]]; then
         ENABLE_NOTIFICATIONS="no"
     else
@@ -333,6 +403,9 @@ EOF
     
     # Create backup directories
     mkdir -p "$LOCAL_BACKUP_DEST/incremental" 2>/dev/null || true
+    
+    # Restore interactive mode
+    INTERACTIVE=$old_interactive
 }
 
 # =============================================================================
@@ -532,7 +605,7 @@ rotate_logs() {
     print_step "log" "Keeping $remaining recent log files" "done"
 }
 
-# Function to check disk space
+# Function to check disk space (with non-interactive safety)
 check_disk_space() {
     local path="$1"
     local required_size="$2"  # in KB, optional
@@ -563,8 +636,13 @@ check_disk_space() {
             send_notification "Backup Failed - Low Space" "Only ${available_hr} free on backup drive" "critical"
         fi
         
-        read -p "  ${ICON_ARROW} Continue anyway? (yes/no): " -r confirm
-        if [[ ! "$confirm" =~ ^[Yy][Ee]?[Ss]?$ ]]; then
+        # Non-interactive safety
+        if [ "$INTERACTIVE" = false ]; then
+            print_error "Non-interactive mode: Aborting due to low disk space"
+            return 1
+        fi
+        
+        if ! safe_confirm "Continue despite low disk space?" "no"; then
             return 1
         fi
     fi
@@ -578,6 +656,12 @@ check_disk_space() {
             
             if [ "$ENABLE_NOTIFICATIONS" = "yes" ]; then
                 send_notification "Backup Failed - Insufficient Space" "Need ${required_hr}, only ${available_hr} free" "critical"
+            fi
+            
+            # Non-interactive safety
+            if [ "$INTERACTIVE" = false ]; then
+                print_error "Non-interactive mode: Aborting due to insufficient space"
+                return 1
             fi
             
             return 1
@@ -1160,9 +1244,13 @@ clean_old_backups() {
     print_success "Cleanup completed"
 }
 
-# Local Backup
+# Local Backup (with non-interactive safety)
 perform_local_backup() {
     print_header "LOCAL BACKUP - ${USERNAME}"
+    
+    if [ "$INTERACTIVE" = false ]; then
+        echo -e "  ${ICON_AUTO} Running in non-interactive mode\n"
+    fi
     
     print_step "1" "Checking source" "start"
     if [ ! -d "$HOME_DIR" ]; then
@@ -1193,14 +1281,17 @@ perform_local_backup() {
     print_step "4" "Loading exclusions" "start"
     show_exclusions
     
-    echo ""
-    print_warning "Backup: $HOME_DIR → $LOCAL_BACKUP_DEST"
-    echo ""
-    read -p "  ${ICON_ARROW} Proceed? (yes/no): " -r confirmation
-    
-    if [[ ! "$confirmation" =~ ^[Yy][Ee]?[Ss]?$ ]]; then
-        print_warning "Cancelled"
-        return 0
+    # Skip confirmation in non-interactive mode
+    if [ "$INTERACTIVE" = true ]; then
+        echo ""
+        print_warning "Backup: $HOME_DIR → $LOCAL_BACKUP_DEST"
+        echo ""
+        if ! safe_confirm "Proceed with backup?" "yes"; then
+            print_warning "Cancelled"
+            return 0
+        fi
+    else
+        echo -e "\n  ${ICON_AUTO} Non-interactive mode: Proceeding with backup automatically"
     fi
     
     create_incremental_backup "$TIMESTAMP"
@@ -1219,7 +1310,7 @@ perform_local_backup() {
     send_notification "Backup Complete" "Local backup completed successfully" "normal"
 }
 
-# NAS Backup
+# NAS Backup (with non-interactive safety)
 perform_nas_backup() {
     if [ -z "${NAS_IP:-}" ] || [ -z "${NAS_USER:-}" ]; then
         print_error "NAS not configured. Please run setup wizard (delete ~/.my-home-vault.conf and restart)"
@@ -1227,6 +1318,10 @@ perform_nas_backup() {
     fi
     
     print_header "NAS BACKUP - ${USERNAME}"
+    
+    if [ "$INTERACTIVE" = false ]; then
+        echo -e "  ${ICON_AUTO} Running in non-interactive mode\n"
+    fi
     
     print_step "1" "Testing NAS connectivity" "start"
     if ! ping -c 1 -W 2 "$NAS_IP" &> /dev/null; then
@@ -1260,9 +1355,13 @@ perform_nas_backup() {
         
         if [ "$nas_percent" -gt $((100 - MIN_FREE_SPACE_PERCENT)) ]; then
             print_warning "NAS has less than ${MIN_FREE_SPACE_PERCENT}% free space"
-            read -p "  ${ICON_ARROW} Continue anyway? (yes/no): " -r confirm
-            if [[ ! "$confirm" =~ ^[Yy][Ee]?[Ss]?$ ]]; then
-                return 1
+            # In non-interactive mode, we'll proceed but log a warning
+            if [ "$INTERACTIVE" = true ]; then
+                if ! safe_confirm "Continue despite low NAS space?" "no"; then
+                    return 1
+                fi
+            else
+                print_warning "Non-interactive mode: Proceeding despite low space (will log warning)"
             fi
         fi
     fi
@@ -1270,14 +1369,17 @@ perform_nas_backup() {
     print_step "5" "Loading exclusions" "start"
     show_exclusions
     
-    echo ""
-    print_warning "Backup: $HOME_DIR → ${NAS_USER}@${NAS_IP}:${NAS_BACKUP_PATH}"
-    echo ""
-    read -p "  ${ICON_ARROW} Proceed? (yes/no): " -r confirmation
-    
-    if [[ ! "$confirmation" =~ ^[Yy][Ee]?[Ss]?$ ]]; then
-        print_warning "Cancelled"
-        return 0
+    # Skip confirmation in non-interactive mode
+    if [ "$INTERACTIVE" = true ]; then
+        echo ""
+        print_warning "Backup: $HOME_DIR → ${NAS_USER}@${NAS_IP}:${NAS_BACKUP_PATH}"
+        echo ""
+        if ! safe_confirm "Proceed with backup?" "yes"; then
+            print_warning "Cancelled"
+            return 0
+        fi
+    else
+        echo -e "\n  ${ICON_AUTO} Non-interactive mode: Proceeding with backup automatically"
     fi
     
     print_step "6" "Running rsync to NAS" "start"
@@ -1328,9 +1430,12 @@ perform_nas_backup() {
     send_notification "NAS Backup Complete" "NAS backup completed successfully" "normal"
 }
 
-# Quiet mode for cron (no menus, just NAS backup)
+# Quiet mode for cron (no menus, just NAS backup) - now with non-interactive safety
 perform_quiet_backup() {
-    # Non-interactive backup for cron jobs
+    # Set non-interactive mode
+    INTERACTIVE=false
+    
+    # Log start
     echo "[$(date)] Starting quiet NAS backup..." >> "$LOG_DIR/quiet.log"
     
     if [ -z "${NAS_IP:-}" ] || [ -z "${NAS_USER:-}" ]; then
@@ -1352,29 +1457,25 @@ perform_quiet_backup() {
         bw_arg="--bwlimit=$BW_LIMIT"
     fi
     
-    rsync -rPaAXv --no-inc-recursive $bw_arg \
-        --delete-before \
-        --exclude-from="$exclude_file" \
-        "$HOME_DIR/" \
-        -e "ssh $SSH_OPTS" \
-        "${NAS_USER}@${NAS_IP}:\"${NAS_BACKUP_PATH}\"/" >> "$LOG_DIR/quiet.log" 2>&1
-    
-    local result=$?
-    rm -f "$exclude_file"
-    
-    if [ $result -eq 0 ]; then
-        echo "[$(date)] SUCCESS: NAS backup completed" >> "$LOG_DIR/quiet.log"
-        # Rotate logs
-        find "$LOG_DIR" -name "vault_*.log" -type f -mtime +7 -delete 2>/dev/null
-        # Keep quiet.log under 10MB
-        if [ -f "$LOG_DIR/quiet.log" ] && [ $(stat -c%s "$LOG_DIR/quiet.log" 2>/dev/null || echo 0) -gt 10485760 ]; then
-            mv "$LOG_DIR/quiet.log" "$LOG_DIR/quiet.log.old"
-        fi
-    else
-        echo "[$(date)] FAILED: NAS backup exited with code $result" >> "$LOG_DIR/quiet.log"
+    # Run backup with non-interactive safety
+    if ! perform_nas_backup; then
+        echo "[$(date)] FAILED: NAS backup failed" >> "$LOG_DIR/quiet.log"
+        rm -f "$exclude_file"
+        exit 1
     fi
     
-    exit $result
+    rm -f "$exclude_file"
+    
+    echo "[$(date)] SUCCESS: NAS backup completed" >> "$LOG_DIR/quiet.log"
+    
+    # Rotate logs
+    find "$LOG_DIR" -name "vault_*.log" -type f -mtime +7 -delete 2>/dev/null
+    # Keep quiet.log under 10MB
+    if [ -f "$LOG_DIR/quiet.log" ] && [ $(stat -c%s "$LOG_DIR/quiet.log" 2>/dev/null || echo 0) -gt 10485760 ]; then
+        mv "$LOG_DIR/quiet.log" "$LOG_DIR/quiet.log.old"
+    fi
+    
+    exit 0
 }
 
 # =============================================================================
@@ -1391,8 +1492,12 @@ backup_current_home() {
             print_step "4" "Current home backed up to: $current_backup" "done"
         else
             print_step "4" "Backup failed" "error"
-            read -p "  ${ICON_ARROW} Continue anyway? (yes/no): " -r confirm
-            if [[ ! "$confirm" =~ ^[Yy][Ee]?[Ss]?$ ]]; then
+            if [ "$INTERACTIVE" = true ]; then
+                if ! safe_confirm "Continue with restore despite backup failure?" "no"; then
+                    return 1
+                fi
+            else
+                print_error "Non-interactive mode: Aborting due to backup failure"
                 return 1
             fi
         fi
@@ -1740,7 +1845,7 @@ show_backup_info() {
 show_help() {
     cat << EOF
 ${BOLD_CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}
-${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.5                     ║${NC}
+${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.5.b                  ║${NC}
 ${BOLD_CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}
 
 ${BOLD_WHITE}USAGE:${NC}
@@ -1754,6 +1859,13 @@ ${BOLD_WHITE}OPTIONS:${NC}
   ${BOLD_GREEN}--dry-run${NC}      Simulation mode
   ${BOLD_GREEN}--quick${NC}        Skip checksum verify
   ${BOLD_GREEN}--reconfigure${NC}  Run setup wizard again
+
+${BOLD_WHITE}NON-INTERACTIVE FEATURES:${NC}
+  • Safe for cron jobs - no hanging prompts
+  • Automatic failure handling in quiet mode
+  • Smart defaults for all confirmations
+  • Detailed logging for post-mortem analysis
+  • Disk space checks with auto-abort in non-interactive mode
 
 ${BOLD_WHITE}MENU OPTIONS:${NC}
   ${BOLD_CYAN}1${NC}  Local Backup    - Create incremental local backup
@@ -1790,6 +1902,7 @@ ${BOLD_WHITE}SAFETY NOTES:${NC}
   • My Home Vault excludes its own config/logs (prevents infinite loops)
   • Automatically detects and attempts to fix read-only USB drives
   • Tests destination writability before starting backup
+  • Non-interactive mode safe for automated backups
 
 ${BOLD_WHITE}My Home Vault - Your Data, Fortified.${NC}
 ${BOLD_WHITE}https://github.com/waelisa/my-home-vault${NC}
@@ -1805,11 +1918,15 @@ show_banner() {
     clear
     echo -e "${BOLD_CYAN}"
     echo "  ╔════════════════════════════════════════════════════════════════╗"
-    echo "  ║             M Y   H O M E   V A U L T   v5.1.5                ║"
+    echo "  ║             M Y   H O M E   V A U L T   v5.1.5.b              ║"
     echo "  ║           Your Data, Fortified · https://wael.name            ║"
     echo "  ╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
     echo -e "  ${ICON_VAULT} ${BOLD_WHITE}Guardian of${NC} ${BOLD_GREEN}${USERNAME}${NC} | ${ICON_HOME} ${BOLD_WHITE}Local${NC} | ${ICON_NAS} ${BOLD_WHITE}NAS${NC}"
+    
+    if [ "$INTERACTIVE" = false ]; then
+        echo -e "  ${ICON_AUTO} ${BOLD_WHITE}Mode:${NC} Non-interactive (cron-safe)"
+    fi
     
     if [ "$BW_LIMIT" -gt 0 ]; then
         echo -e "  ${ICON_NAS} ${BOLD_WHITE}NAS Speed:${NC} ${BW_LIMIT} KB/s limit (protects drives)"
@@ -1857,6 +1974,9 @@ show_menu() {
     echo ""
     echo -e "  ${BOLD_BLUE}Logs:${NC} $LOG_DIR"
     echo -e "  ${BOLD_BLUE}Config:${NC} $CONFIG_FILE"
+    if [ "$INTERACTIVE" = false ]; then
+        echo -e "  ${ICON_AUTO} ${BOLD_BLUE}Mode:${NC} Non-interactive (cron-safe)"
+    fi
     if [ "$BW_LIMIT" -gt 0 ]; then
         echo -e "  ${ICON_NAS} ${BOLD_BLUE}NAS Speed:${NC} ${BW_LIMIT} KB/s limit (recommended for Asustor AS4004T)"
     fi
@@ -1886,6 +2006,7 @@ parse_args() {
                 ;;
             --quiet|-q)
                 # Quiet mode for cron - just run NAS backup
+                INTERACTIVE=false
                 perform_quiet_backup
                 ;;
             --repair)
