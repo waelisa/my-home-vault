@@ -2,7 +2,7 @@
 
 # =============================================================================
 #                          M Y   H O M E   V A U L T
-#                              v5.1.3
+#                              v5.1.4
 # =============================================================================
 #   GitHub    : https://github.com/waelisa/my-home-vault
 #   License   : MIT
@@ -16,7 +16,7 @@
 #   automatic drive detection, incremental backups (space-saving hard links),
 #   NAS support, dry-run modes, automatic retention cleanup, integrity
 #   verification, desktop notifications, cron integration, log rotation,
-#   and AETHER-FIX repair mode with NAS protection.
+#   and VAULT-FIX repair mode with NAS protection.
 # =============================================================================
 #   QUICK START:
 #   1. curl -O https://raw.githubusercontent.com/waelisa/my-home-vault/main/my-home-vault.sh
@@ -93,7 +93,7 @@ sleep 1
 # =============================================================================
 
 # --- Version Information ---
-CURRENT_VERSION="5.1.3"
+CURRENT_VERSION="5.1.4"
 VERSION_URL="https://raw.githubusercontent.com/waelisa/my-home-vault/main/VERSION"
 CONFIG_FILE="${HOME}/.my-home-vault.conf"
 VAULT_DIR="${HOME}/.my-home-vault"
@@ -775,11 +775,11 @@ manage_logs() {
 }
 
 # =============================================================================
-#                     R E P A I R   M O D E   (AETHER-FIX)
+#                     R E P A I R   M O D E   (VAULT-FIX)
 # =============================================================================
 
 perform_repair() {
-    print_header "AETHER-FIX: REPAIR MODE"
+    print_header "VAULT-FIX: REPAIR MODE"
     
     if [ -z "${NAS_IP:-}" ] || [ -z "${NAS_USER:-}" ]; then
         print_error "NAS not configured. Repair mode requires NAS backup."
@@ -815,7 +815,7 @@ perform_repair() {
         echo -e "    ${ICON_INFO} Bandwidth limit: ${BW_LIMIT} KB/s (protects NAS)"
     fi
     
-    # Use checksum (-c) to verify and repair (AETHER-FIX)
+    # Use checksum (-c) to verify and repair (VAULT-FIX)
     # Added --no-inc-recursive for better progress display on large transfers
     if rsync -avc --progress --no-inc-recursive $bw_arg \
         --exclude-from="$exclude_file" \
@@ -834,23 +834,23 @@ perform_repair() {
             local received=$(grep "bytes received" "$LOG_FILE" | tail -1 | awk '{print $1}')
             if [ "$received" != "0" ]; then
                 print_step "3" "⚠ Repaired corrupted files - check log for details" "warn"
-                send_notification "AETHER-FIX: Files Repaired" "Corrupted files were fixed on NAS" "normal"
+                send_notification "VAULT-FIX: Files Repaired" "Corrupted files were fixed on NAS" "normal"
             else
                 print_step "3" "✓ No corruption detected - backup is healthy" "done"
-                send_notification "AETHER-FIX: Backup Healthy" "No corruption found in NAS backup" "normal"
+                send_notification "VAULT-FIX: Backup Healthy" "No corruption found in NAS backup" "normal"
             fi
         fi
     else
         local exit_code=$?
         print_step "2" "Repair failed with exit code $exit_code" "error"
         rm -f "$exclude_file"
-        send_notification "AETHER-FIX Failed" "Repair encountered errors - check logs" "critical"
+        send_notification "VAULT-FIX Failed" "Repair encountered errors - check logs" "critical"
         return $exit_code
     fi
     
     rm -f "$exclude_file"
     echo ""
-    print_success "AETHER-FIX completed successfully"
+    print_success "VAULT-FIX completed successfully"
 }
 
 # =============================================================================
@@ -1668,7 +1668,7 @@ show_backup_info() {
 show_help() {
     cat << EOF
 ${BOLD_CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}
-${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.3                     ║${NC}
+${BOLD_CYAN}║                 M Y   H O M E   V A U L T   v5.1.4                     ║${NC}
 ${BOLD_CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}
 
 ${BOLD_WHITE}USAGE:${NC}
@@ -1678,7 +1678,7 @@ ${BOLD_WHITE}OPTIONS:${NC}
   ${BOLD_GREEN}--help, -h${NC}     Show this help
   ${BOLD_GREEN}--version${NC}      Show version
   ${BOLD_GREEN}--quiet, -q${NC}    Run in quiet mode (for cron) - performs NAS backup
-  ${BOLD_GREEN}--repair${NC}       Run AETHER-FIX repair mode (verify & fix NAS backup)
+  ${BOLD_GREEN}--repair${NC}       Run VAULT-FIX repair mode (verify & fix NAS backup)
   ${BOLD_GREEN}--dry-run${NC}      Simulation mode
   ${BOLD_GREEN}--quick${NC}        Skip checksum verify
   ${BOLD_GREEN}--reconfigure${NC}  Run setup wizard again
@@ -1689,7 +1689,7 @@ ${BOLD_WHITE}MENU OPTIONS:${NC}
   ${BOLD_CYAN}3${NC}  NAS Backup      - Backup to NAS (with speed limiting)
   ${BOLD_CYAN}4${NC}  NAS Restore     - Restore from NAS
   ${BOLD_CYAN}5${NC}  Show Info       - Display backup information
-  ${BOLD_CYAN}6${NC}  Repair Mode     - AETHER-FIX: verify & repair NAS backup
+  ${BOLD_CYAN}6${NC}  Repair Mode     - VAULT-FIX: verify & repair NAS backup
   ${BOLD_CYAN}7${NC}  Test NAS        - Test NAS connection
   ${BOLD_CYAN}8${NC}  Setup SSH Key   - Configure passwordless NAS
   ${BOLD_CYAN}9${NC}  Cron Setup      - Schedule automatic backups
@@ -1732,7 +1732,7 @@ show_banner() {
     clear
     echo -e "${BOLD_CYAN}"
     echo "  ╔════════════════════════════════════════════════════════════════╗"
-    echo "  ║             M Y   H O M E   V A U L T   v5.1.3                ║"
+    echo "  ║             M Y   H O M E   V A U L T   v5.1.4                ║"
     echo "  ║           Your Data, Fortified · https://wael.name            ║"
     echo "  ╚════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
@@ -1744,7 +1744,7 @@ show_banner() {
     
     echo -e "  ${ICON_CPU} ${BOLD_WHITE}SSH Timeout:${NC} ${SSH_TIMEOUT}s (prevents hanging)"
     
-    check_for_updates()
+    check_for_updates
     echo ""
 }
 
@@ -1765,7 +1765,7 @@ show_menu() {
     echo -e "${BOLD_CYAN}║                                                                          ║${NC}"
     echo -e "${BOLD_CYAN}║  ${BOLD_YELLOW}MAINTENANCE:${NC}                                                   ║${NC}"
     echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}5.${NC} Show backup info${NC}                                          ║${NC}"
-    echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}6.${NC} Repair Mode (AETHER-FIX) - Verify NAS backup${NC}            ║${NC}"
+    echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}6.${NC} Repair Mode (VAULT-FIX) - Verify NAS backup${NC}             ║${NC}"
     
     if [ -n "${NAS_IP:-}" ]; then
         echo -e "${BOLD_CYAN}║    ${BOLD_WHITE}7.${NC} Test NAS connection${NC}                                       ║${NC}"
